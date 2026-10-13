@@ -11,7 +11,7 @@ import {
   type DesktopAppState,
   type SelectedTranscriptRecord,
 } from "../../contracts/desktop-state";
-import type { PiDesktopApi } from "../../contracts/ipc";
+import type { PiDesktopApi, PiDesktopStatePush } from "../../contracts/ipc";
 
 export type HydrationOperation = "state" | "selected-transcript";
 
@@ -74,7 +74,7 @@ export type DesktopHydrationEvent =
       readonly state: DesktopAppState;
     }
   | { readonly type: "state-pull-failed"; readonly attemptId: number }
-  | { readonly type: "state-pushed"; readonly state: DesktopAppState }
+  | { readonly type: "state-pushed"; readonly state: PiDesktopStatePush }
   | { readonly type: "state-patched"; readonly snapshot: DesktopAppState | null }
   | { readonly type: "transcript-pull-started"; readonly attemptId: number }
   | {
@@ -138,6 +138,18 @@ function mergeLiveSnapshot(
   incoming: DesktopAppState,
 ): DesktopAppState {
   return current && incoming.revision < current.revision ? current : incoming;
+}
+
+// A push without the model catalog keeps the one the window has. Keeping the same object
+// also lets the model lists built from it stay cached.
+function withCatalog(
+  pushed: PiDesktopStatePush,
+  current: DesktopAppState | null,
+): DesktopAppState | null {
+  if (pushed.runtimeByWorkspace) {
+    return pushed as DesktopAppState;
+  }
+  return current ? { ...pushed, runtimeByWorkspace: current.runtimeByWorkspace } : null;
 }
 
 function selectedSessionKey(snapshot: DesktopAppState | null): string {
@@ -225,11 +237,17 @@ export function reduceDesktopHydration(
         stateInFlightId: null,
         stateFailed: current.liveSnapshot === null,
       };
-    case "state-pushed":
+    case "state-pushed": {
+      const state = withCatalog(event.state, current.liveSnapshot);
+      if (!state) {
+        // No catalog yet: the state pull, or the first push after load, brings the whole state.
+        return current;
+      }
       return {
-        ...withLiveSnapshot(current, mergeLiveSnapshot(current.liveSnapshot, event.state)),
+        ...withLiveSnapshot(current, mergeLiveSnapshot(current.liveSnapshot, state)),
         stateFailed: false,
       };
+    }
     case "state-patched":
       return withLiveSnapshot(current, event.snapshot);
     case "transcript-pull-started":
