@@ -28,6 +28,7 @@ import {
   type TerminalPanelSnapshot,
   type TerminalSize,
 } from "../contracts/ipc";
+import type { SelectedTranscriptUpdate } from "../contracts/transcript-sync";
 import type { ExtensionActionEffect, ExtensionActionRequest } from "../contracts/extension-actions";
 import type { ClipboardImageRead } from "../contracts/composer-attachments";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "../contracts/workbench";
@@ -174,17 +175,17 @@ contextBridge.exposeInMainWorld("piApp", {
     ipcRenderer.invoke(
       desktopIpc.selectedTranscriptRequest,
     ) as Promise<SelectedTranscriptRecord | null>,
-  onSelectedTranscriptChanged: (listener: (payload: SelectedTranscriptRecord | null) => void) => {
-    const handle = (
-      _event: Electron.IpcRendererEvent,
-      payload: SelectedTranscriptRecord | null,
-    ) => {
-      listener(payload);
+  onSelectedTranscriptChanged: (listener: (update: SelectedTranscriptUpdate) => void) => {
+    const handle = (_event: Electron.IpcRendererEvent, update: SelectedTranscriptUpdate) => {
+      listener(update);
     };
     ipcRenderer.on(desktopIpc.selectedTranscriptChanged, handle);
     return () => {
       ipcRenderer.removeListener(desktopIpc.selectedTranscriptChanged, handle);
     };
+  },
+  requestSelectedTranscriptResend: () => {
+    ipcRenderer.send(desktopIpc.selectedTranscriptResend);
   },
   onCommand: (listener: (command: PiDesktopCommand) => void) => appCommands.subscribe(listener),
   onWorkspacePicked: (listener: (workspaceId: string) => void) => {

@@ -7,6 +7,7 @@ import type {
   SelectedTranscriptRecord,
 } from "../../contracts/desktop-state";
 import { desktopIpc } from "../../contracts/ipc";
+import { selectedTranscriptUpdate } from "../../contracts/transcript-sync";
 import { SerializedActionQueue } from "./action-queue";
 
 interface WindowViewState {
@@ -58,7 +59,11 @@ function canPublishToWindow(window: BrowserWindow): boolean {
 }
 
 export class WindowOwner {
-  private readonly lastPublishedTranscript = new Map<number, SelectedTranscriptRecord | null>();
+  private readonly lastPublishedTranscript = new Map<
+    number,
+    { readonly record: SelectedTranscriptRecord | null; readonly version: number }
+  >();
+  private transcriptVersion = 0;
   private readonly windows = new Set<BrowserWindow>();
   private readonly windowIds = new WeakMap<BrowserWindow, number>();
   private readonly views = new Map<number, WindowViewState>();
@@ -352,7 +357,8 @@ export class WindowOwner {
     // Transcript arrays are replaced on writes, so identity detects changes
     // without serializing unchanged transcripts for unrelated session events.
     // Check it before projecting state, which clones the whole app state.
-    const previous = this.lastPublishedTranscript.get(webContentsId);
+    const published = this.lastPublishedTranscript.get(webContentsId);
+    const previous = published?.record;
     if (payload) {
       if (
         previous &&
@@ -377,8 +383,21 @@ export class WindowOwner {
     } else if (projected.selectedSessionId) {
       return;
     }
-    this.lastPublishedTranscript.set(webContentsId, payload);
-    window.webContents.send(desktopIpc.selectedTranscriptChanged, payload);
+    this.transcriptVersion += 1;
+    const version = this.transcriptVersion;
+    this.lastPublishedTranscript.set(webContentsId, { record: payload, version });
+    window.webContents.send(
+      desktopIpc.selectedTranscriptChanged,
+      selectedTranscriptUpdate(previous, published?.version ?? 0, payload, version),
+    );
+  }
+
+  // The window could not apply a transcript patch (it missed the record the patch is against),
+  // so send it the whole transcript again.
+  resendSelectedTranscript(sender: WebContents): void {
+    const window = this.windowForSender(sender);
+    this.lastPublishedTranscript.delete(window.webContents.id);
+    this.publishTranscriptSoon(window);
   }
 
   private publishTranscriptSoon(window: BrowserWindow): void {

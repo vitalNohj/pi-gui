@@ -8,6 +8,10 @@ import {
 } from "react";
 import type { DesktopAppState, SelectedTranscriptRecord } from "../../contracts/desktop-state";
 import type { PiDesktopApi } from "../../contracts/ipc";
+import {
+  applySelectedTranscriptUpdate,
+  initialSelectedTranscriptSync,
+} from "../../contracts/transcript-sync";
 
 export type HydrationOperation = "state" | "selected-transcript";
 
@@ -412,10 +416,24 @@ export function useDesktopAppState(): DesktopAppSession {
         apply({ type: "state-pushed", state });
       }
     });
-    const unsubscribeTranscript = api.onSelectedTranscriptChanged((record) => {
-      if (active) {
-        apply({ type: "transcript-pushed", record });
+    let transcriptSync = initialSelectedTranscriptSync;
+    let transcriptResendRequested = false;
+    const unsubscribeTranscript = api.onSelectedTranscriptChanged((update) => {
+      if (!active) {
+        return;
       }
+      const result = applySelectedTranscriptUpdate(transcriptSync, update);
+      transcriptSync = result.state;
+      if (result.kind === "needs-full") {
+        // Patches already on their way are skipped until the whole transcript arrives.
+        if (!transcriptResendRequested) {
+          transcriptResendRequested = true;
+          api.requestSelectedTranscriptResend();
+        }
+        return;
+      }
+      transcriptResendRequested = false;
+      apply({ type: "transcript-pushed", record: result.state.record });
     });
 
     pullState(api);

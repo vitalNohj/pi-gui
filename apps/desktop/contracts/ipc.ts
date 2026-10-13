@@ -6,6 +6,7 @@ import type {
   ExtensionViewMessage,
   ExtensionViewCatalogChange,
 } from "./extension-views";
+import type { SelectedTranscriptUpdate } from "./transcript-sync";
 import type { RuntimeSettingsSnapshot } from "@pi-gui/session-driver/runtime-types";
 import type { ExtensionActionEffect, ExtensionActionRequest } from "./extension-actions";
 import type {
@@ -119,6 +120,7 @@ export const desktopIpc = {
   saveTaskWorkbenchTemplate: "pi-gui:save-task-workbench-template",
   selectedTranscriptRequest: "pi-gui:selected-transcript-request",
   selectedTranscriptChanged: "pi-gui:selected-transcript-changed",
+  selectedTranscriptResend: "pi-gui:selected-transcript-resend",
   appCommand: "pi-gui:app-command",
   workspacePicked: "pi-gui:workspace-picked",
   clipboardImagePasted: "pi-gui:clipboard-image-pasted",
@@ -371,9 +373,7 @@ export function getSidePanelToggleShortcutLabel(platform: NodeJS.Platform): stri
 }
 
 export type PiDesktopStateListener = (state: DesktopAppState) => void;
-export type PiDesktopSelectedTranscriptListener = (
-  payload: SelectedTranscriptRecord | null,
-) => void;
+export type PiDesktopSelectedTranscriptListener = (update: SelectedTranscriptUpdate) => void;
 export type PiDesktopCommand = (typeof desktopCommands)[keyof typeof desktopCommands];
 
 export type ChangedFileStatus =
@@ -700,6 +700,8 @@ export interface PiDesktopApi {
   onStateChanged(listener: PiDesktopStateListener): () => void;
   getSelectedTranscript(): Promise<SelectedTranscriptRecord | null>;
   onSelectedTranscriptChanged(listener: PiDesktopSelectedTranscriptListener): () => void;
+  // Ask main for the whole selected transcript after an update could not be applied.
+  requestSelectedTranscriptResend(): void;
   onCommand(listener: (command: PiDesktopCommand) => void): () => void;
   onWorkspacePicked(listener: (workspaceId: string) => void): () => void;
   onClipboardImagePasted(listener: (result: ClipboardImageRead) => void): () => void;
