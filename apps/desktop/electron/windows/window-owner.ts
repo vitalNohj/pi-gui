@@ -52,6 +52,16 @@ function viewFromState(state: DesktopAppState): WindowViewState {
   };
 }
 
+const NO_ORCHESTRATION_CHILDREN: DesktopAppState["orchestrationChildren"] = [];
+
+// The window never reads orchestration children, and they carry every child
+// thread's transcript, so pushes leave them out. getState() still returns them.
+function stateForPush(state: DesktopAppState): DesktopAppState {
+  return state.orchestrationChildren.length === 0
+    ? state
+    : { ...state, orchestrationChildren: NO_ORCHESTRATION_CHILDREN };
+}
+
 function canPublishToWindow(window: BrowserWindow): boolean {
   return (
     !window.isDestroyed() && !window.webContents.isDestroyed() && !window.webContents.isCrashed()
@@ -281,7 +291,7 @@ export class WindowOwner {
     }
     const projected = this.projectAndRemember(window.webContents.id, state);
     this.lastPublishedCatalog.set(window.webContents.id, projected.runtimeByWorkspace);
-    window.webContents.send(desktopIpc.stateChanged, projected);
+    window.webContents.send(desktopIpc.stateChanged, stateForPush(projected));
     this.publishTranscriptSoon(window);
     return projected;
   }
@@ -343,13 +353,14 @@ export class WindowOwner {
         : (this.views.get(webContentsId) ?? viewFromState(state));
     const projected = this.projectState(webContentsId, state, view);
     this.views.set(webContentsId, viewFromState(projected));
+    const pushed = stateForPush(projected);
     if (this.lastPublishedCatalog.get(webContentsId) === projected.runtimeByWorkspace) {
-      const { runtimeByWorkspace: _unchanged, ...withoutCatalog } = projected;
+      const { runtimeByWorkspace: _unchanged, ...withoutCatalog } = pushed;
       window.webContents.send(desktopIpc.stateChanged, withoutCatalog);
       return;
     }
     this.lastPublishedCatalog.set(webContentsId, projected.runtimeByWorkspace);
-    window.webContents.send(desktopIpc.stateChanged, projected);
+    window.webContents.send(desktopIpc.stateChanged, pushed);
   }
 
   private async publishTranscript(window: BrowserWindow): Promise<void> {
