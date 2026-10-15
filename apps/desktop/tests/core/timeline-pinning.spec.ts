@@ -795,6 +795,41 @@ test("keeps transcript pinning semantics while assistant deltas stream into the 
   }
 });
 
+test("snaps the timeline to the bottom when a prompt is submitted while scrolled up", async () => {
+  test.setTimeout(90_000);
+  const userDataDir = await makeUserDataDir();
+  const workspacePath = await makeWorkspace("timeline-pinning-submit");
+  const harness = await launchDesktop(userDataDir, {
+    initialWorkspaces: [workspacePath],
+    testMode: "background",
+  });
+
+  try {
+    const window = await harness.firstWindow();
+    await createTimelineSession(window, "Submit snaps to bottom");
+
+    await seedTranscriptMessages(harness, window, {
+      count: 24,
+      textFactory: (index) => `Submit seed row ${index} `.repeat(8),
+    });
+    await expect(window.getByTestId("transcript")).toContainText("Submit seed row 23");
+
+    await jumpTimelineToBottom(window);
+    await scrollTimelineAwayFromBottom(window, 600);
+    await expect.poll(async () => (await getTimelineScrollMetrics(window)).remainingFromBottom).toBeGreaterThan(300);
+
+    const composer = window.getByTestId("composer");
+    await composer.fill("SUBMIT_SNAP_PROMPT");
+    await composer.press("Enter");
+
+    await expect(window.getByTestId("transcript")).toContainText("SUBMIT_SNAP_PROMPT");
+    await expect.poll(async () => (await getTimelineScrollMetrics(window)).remainingFromBottom).toBeLessThanOrEqual(16);
+    await expect(window.getByTestId("timeline-jump")).toHaveCount(0);
+  } finally {
+    await harness.close();
+  }
+});
+
 test("lands an opened thread at the bottom without a smooth scroll from the top", async () => {
   test.setTimeout(90_000);
   const userDataDir = await makeUserDataDir();

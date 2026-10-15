@@ -676,13 +676,15 @@ export function useTimelineScroll({
     cancelPendingTimelineOffBottomRestore(selectedSessionKey);
   };
 
-  const jumpToLatest = () => {
+  // Re-pin the timeline to the bottom. "smooth" for the jump-to-latest button; "auto" (instant)
+  // when the user submits a prompt, so their message and the reply stay in view like the Pi TUI.
+  const jumpToLatest = (behavior: ScrollBehavior = "smooth") => {
     cancelPendingTimelineOffBottomRestore(selectedSessionKey);
     if (selectedSessionKey) {
       clearTimelineOffBottomState(selectedSessionKey);
     }
     pinnedToBottomRef.current = true;
-    requestPinnedBottomAlignment("smooth", { preferExactRestore: true });
+    requestPinnedBottomAlignment(behavior, { preferExactRestore: true });
   };
 
   // Capture the current pinned state before a layout change (e.g. toggling a side panel) so the

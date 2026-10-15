@@ -37,7 +37,11 @@ interface UseSessionComposerParams {
   readonly handleSlashKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => boolean;
   readonly newThreadComposerRef: MutableRefObject<HTMLTextAreaElement | null>;
   readonly appendNewThreadAttachment: (attachment: ComposerImageAttachment) => void;
+  /** Called once a prompt is actually sent (not for cancel/tree commands); used to snap the timeline to the bottom. */
+  readonly onSubmitted: () => void;
 }
+
+const EMPTY_ID_SET: ReadonlySet<string> = new Set();
 
 export function useSessionComposer(params: UseSessionComposerParams) {
   const {
@@ -55,10 +59,17 @@ export function useSessionComposer(params: UseSessionComposerParams) {
     handleSlashKeyDown,
     newThreadComposerRef,
     appendNewThreadAttachment,
+    onSubmitted,
   } = params;
 
-  const [attachmentsClearedOnSubmit, setAttachmentsClearedOnSubmit] = useState(false);
-  const composerAttachments = attachmentsClearedOnSubmit ? [] : (snapshot?.composerAttachments ?? []);
+  // Attachments optimistically hidden while their submit is in flight. Scoped to the
+  // submitted ids (not a blanket flag) because the submit IPC resolves only after the
+  // whole agent turn finishes; a blanket flag hid every attachment pasted mid-run.
+  const [submittedAttachmentIds, setSubmittedAttachmentIds] = useState<ReadonlySet<string>>(EMPTY_ID_SET);
+  const snapshotAttachments = snapshot?.composerAttachments ?? [];
+  const composerAttachments = submittedAttachmentIds.size === 0
+    ? snapshotAttachments
+    : snapshotAttachments.filter((attachment) => !submittedAttachmentIds.has(attachment.id));
 
   const submitComposerDraft = (options: { readonly deliverAs?: "steer" | "followUp" } = {}) => {
     if (!api || !selectedSession) {
@@ -97,7 +108,11 @@ export function useSessionComposer(params: UseSessionComposerParams) {
 
     const previousDraft = composerDraft;
     setComposerDraft("");
-    setAttachmentsClearedOnSubmit(true);
+    onSubmitted();
+    const submittedIds = new Set(composerAttachments.map((attachment) => attachment.id));
+    if (submittedIds.size > 0) {
+      setSubmittedAttachmentIds(submittedIds);
+    }
     void (async () => {
       const nextState = await updateSnapshot(api, setSnapshot, () =>
         api.submitComposer(previousDraft, selectedSession.status === "running" ? { deliverAs: options.deliverAs ?? "followUp" } : undefined),
@@ -107,14 +122,19 @@ export function useSessionComposer(params: UseSessionComposerParams) {
       if (composerDraftRef.current === "") {
         setComposerDraft(nextState.composerDraft);
       }
-      setAttachmentsClearedOnSubmit(false);
+      clearSubmittedAttachmentIds(submittedIds);
     })().catch(() => {
       if (composerDraftRef.current === "") {
         setComposerDraft(previousDraft);
       }
-      setAttachmentsClearedOnSubmit(false);
+      clearSubmittedAttachmentIds(submittedIds);
     });
   };
+
+  function clearSubmittedAttachmentIds(submittedIds: ReadonlySet<string>) {
+    // Only clear our own submit's ids; a newer overlapping submit may own the state now.
+    setSubmittedAttachmentIds((current) => (current === submittedIds ? EMPTY_ID_SET : current));
+  }
 
   const handlePickAttachments = () => {
     if (!api) {

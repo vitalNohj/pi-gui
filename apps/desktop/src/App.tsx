@@ -419,6 +419,7 @@ export default function App() {
     handleSlashKeyDown: slashMenu.handleSlashKeyDown,
     newThreadComposerRef: newThread.composerRef,
     appendNewThreadAttachment: newThread.appendAttachment,
+    onSubmitted: () => jumpToLatest("auto"),
   });
 
   useEffect(() => {
@@ -935,7 +936,7 @@ export default function App() {
                   onTimelineScrollIntent={handleTimelineScrollIntent}
                   threadSearch={threadSearch}
                   showJumpToLatest={showJumpToLatest}
-                  onJumpToLatest={jumpToLatest}
+                  onJumpToLatest={() => jumpToLatest()}
                   onContentHeightChange={handleTimelineContentHeightChange}
                   onViewFileInDiff={handleViewFileInDiff}
                   onForkFromMessage={selectedSession.status === "running" ? undefined : openForkModal}
