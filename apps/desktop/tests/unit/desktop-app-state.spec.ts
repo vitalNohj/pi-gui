@@ -374,6 +374,7 @@ test("a transcript patch carries only the changed rows and rebuilds the same tra
   const tooFar = { workspaceId: "ws", sessionId: "live", start: 5, deleteCount: 1, rows: [] };
   expect(applySelectedTranscriptPatch(record([row("a")]), tooFar)).toBe(undefined);
   expect(applySelectedTranscriptPatch(null, tooFar)).toBe(undefined);
+});
 
 test("a state push without the model catalog keeps the catalog the window has", () => {
   const runtimeByWorkspace = { ws: {} } as unknown as DesktopAppState["runtimeByWorkspace"];
@@ -395,4 +396,40 @@ test("a state push without the model catalog keeps the catalog the window has", 
   const replaced = snapshot(3);
   const updated = reduceDesktopHydration(model, { type: "state-pushed", state: replaced });
   expect(updated.liveSnapshot).toBe(replaced);
+});
+
+test("an extension UI update patches only that session's UI and ignores stale ones", () => {
+  const ui = (title: string) => ({
+    instanceId: "instance",
+    statuses: [],
+    widgets: [],
+    pendingDialogs: [],
+    notices: [],
+    title,
+  });
+  const base = snapshot(5, { sessionExtensionUiBySession: { "w:other": ui("other") } });
+  const ready = reduceAll([{ type: "state-pushed", state: base }]);
+
+  const patched = reduceDesktopHydration(ready, {
+    type: "extension-ui-pushed",
+    update: { sessionKey: "w:s", ui: ui("Spinner 1"), revision: 6 },
+  });
+  expect(patched.liveSnapshot?.revision).toBe(6);
+  expect(patched.liveSnapshot?.sessionExtensionUiBySession["w:s"]?.title).toBe("Spinner 1");
+  expect(patched.liveSnapshot?.sessionExtensionUiBySession["w:other"]).toBe(
+    base.sessionExtensionUiBySession["w:other"],
+  );
+  expect(patched.liveSnapshot?.workspaces).toBe(base.workspaces);
+
+  const stale = reduceDesktopHydration(patched, {
+    type: "extension-ui-pushed",
+    update: { sessionKey: "w:s", ui: ui("Spinner 0"), revision: 5 },
+  });
+  expect(stale).toBe(patched);
+
+  const beforeState = reduceDesktopHydration(initialDesktopHydrationModel(), {
+    type: "extension-ui-pushed",
+    update: { sessionKey: "w:s", ui: ui("Spinner 1"), revision: 6 },
+  });
+  expect(beforeState.liveSnapshot).toBeNull();
 });

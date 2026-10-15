@@ -66,6 +66,7 @@ import type {
   SendChildThreadFollowUpInput,
   SetChildSupervisionLoopInput,
   SelectedTranscriptRecord,
+  SessionExtensionUiUpdate,
   StartThreadInput,
   ThemePresetId,
   ThreadGrouping,
@@ -190,6 +191,15 @@ contextBridge.exposeInMainWorld("piApp", {
     };
   },
   resendSelectedTranscript: () => ipcRenderer.send(desktopIpc.selectedTranscriptResend),
+  onExtensionUiChanged: (listener: (update: SessionExtensionUiUpdate) => void) => {
+    const handle = (_event: Electron.IpcRendererEvent, update: SessionExtensionUiUpdate) => {
+      listener(update);
+    };
+    ipcRenderer.on(desktopIpc.extensionUiChanged, handle);
+    return () => {
+      ipcRenderer.removeListener(desktopIpc.extensionUiChanged, handle);
+    };
+  },
   onCommand: (listener: (command: PiDesktopCommand) => void) => appCommands.subscribe(listener),
   onWorkspacePicked: (listener: (workspaceId: string) => void) => {
     const handle = (_event: Electron.IpcRendererEvent, workspaceId: string) => {
