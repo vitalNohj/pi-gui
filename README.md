@@ -16,6 +16,137 @@ you set up with the pi CLI carries over.
 
 <sub>A real run: the agent fixes a bug, adds a test and runs it, then the change opens for review. ([Watch in full quality](./apps/website/public/media/hero.mp4))</sub>
 
+## Performance work in this fork
+
+This fork measures where pi-gui spends its time on a large real profile and fixes the worst
+costs, one PR each, with before/after numbers. Fixes are proposed upstream once measured.
+
+### Fixes so far
+
+| PR                                                           | Problem                                                                                              | Result                                                                              |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| [#265](https://github.com/minghinmatthewlam/pi-gui/pull/265) | Model options rebuilt with glob matching on every keystroke and every state push                     | Keystroke to next frame 75 / 155 / 220 ms → 1.3 / 20 / 23 ms (median / p95 / max)   |
+| [#267](https://github.com/minghinmatthewlam/pi-gui/pull/267) | The open thread's whole transcript resent several times a second, and again for every one-row change | Unchanged resends 8.8/s × 28 MB → 0; 421.5 MB → 18 KB sent per minute of tool calls |
+| [#269](https://github.com/minghinmatthewlam/pi-gui/pull/269) | The unchanged model catalog (813 KB) included in every state push                                    | Push size 1.69 MB → 1.06 MB; catalog data 1.7 GB → 2.4 MB per 30 s                  |
+
+<details>
+<summary>#265: model options and glob matching</summary>
+
+Renderer CPU profiles, about 20 s each, typing in the composer of a busy thread (1,812 models,
+13 enabled patterns):
+
+|                                                         | Before            | After            |
+| ------------------------------------------------------- | ----------------- | ---------------- |
+| `buildModelOptions` and callees, share of renderer time | 73.5%             | 13.3%            |
+| minimatch compiling globs (`make`)                      | 64.9%             | 11.7%            |
+| `#parseGlob` self time                                  | 29.2%             | 5.4%             |
+| Renderer idle                                           | 0%                | 68%              |
+| Renderer process CPU                                    | ~100%             | ~33%             |
+| Keydown dispatch delay, median / p95 / max              | 24 / 77 / 99 ms   | 1.1 / 16 / 34 ms |
+| Keystroke to next frame, median / p95 / max             | 75 / 155 / 220 ms | 1.3 / 20 / 23 ms |
+
+10 s renderer profiles with nobody typing and about 16 state snapshots a second, before and
+after compiling each glob once:
+
+|                                 | Before  | After |
+| ------------------------------- | ------- | ----- |
+| `buildModelOptions` and callees | 26.2%   | 1.9%  |
+| `#parseGlob` self time          | 10.0%   | 0%    |
+| `App` render                    | 29.1%   | 3.9%  |
+| Renderer idle                   | 38.7%   | 73.6% |
+| Renderer process CPU            | ~63–90% | ~40%  |
+
+</details>
+
+<details>
+<summary>#267: transcript sends</summary>
+
+Not resending unchanged transcripts (thread of 925 rows, about 28.6 MB):
+
+|                                                | Before                | After     |
+| ---------------------------------------------- | --------------------- | --------- |
+| Sends of an unchanged transcript               | 8.8 a second × ~28 MB | 0 in 10 s |
+| Main process time spent sending the transcript | 31%                   | 0.1%      |
+| Main process busy                              | 39%                   | 4%        |
+| Renderer idle                                  | 60%                   | 78%       |
+
+Sending only the changed rows, 60 s each while the open thread ran many tool calls:
+
+|                                       | Before            | After                    |
+| ------------------------------------- | ----------------- | ------------------------ |
+| Thread size                           | 1,013 rows, 32 MB | 1,386 rows, 39 MB        |
+| Whole-transcript sends                | 13                | 0                        |
+| Data per send                         | 32.4 MB           | 1.7 KB average, 6 KB max |
+| Total data sent                       | 421.5 MB          | 18 KB                    |
+| Main process time sending transcripts | 527 ms            | 41 ms                    |
+
+</details>
+
+<details>
+<summary>#269: model catalog in state pushes</summary>
+
+30 s each, 2 workspaces, 383 sessions, 1,812 models per workspace. Different numbers of threads
+were running, so compare per push:
+
+|                                           | Before  | After                       |
+| ----------------------------------------- | ------- | --------------------------- |
+| State pushes in 30 s                      | 2,178   | 494                         |
+| Size of each push                         | 1.69 MB | 1.06 MB                     |
+| Model catalog in each push                | 813 KB  | 0 (sent in 3 of 494 pushes) |
+| Catalog data sent in 30 s                 | 1.7 GB  | 2.4 MB                      |
+| Main process time sending state, per push | 2.5 ms  | 1.7 ms                      |
+
+</details>
+
+### Survey on a copy of your real profile
+
+`apps/desktop/tests/perf/real-profile-survey.spec.ts` copies your pi-gui profile and pi agent
+folder (APFS clones, so it is instant), switches off side effects in the copy (scheduled tasks,
+sync and self-update packages), and launches the app on it. It simulates running threads through
+the app's test hooks, with no model calls, then runs user scenarios and writes a ranked report
+with main-process and renderer CPU profiles, IPC traffic per channel, React render counts per
+component, frame times and keystroke latency. The copy is deleted afterwards; your profile is
+only read.
+
+```bash
+pnpm --filter @pi-gui/desktop build
+PERF_REAL_PROFILE=1 PI_APP_TEST_MODE=background \
+  pnpm exec playwright test -c apps/desktop/playwright.config.ts \
+  apps/desktop/tests/perf/real-profile-survey.spec.ts
+```
+
+- Scenarios: `idle`, `typing`, `switch-threads`, `scroll`, `model-picker`, `settings`,
+  `open-largest`, `second-window`. Pick some with `PERF_SCENARIOS=idle,typing`.
+- Load: each running thread streams text and updates every 50 ms, sets the window title every
+  120 ms and runs a tool call with ~30 KB of output every 5 s. `PERF_RUNNING` sets the number of
+  background threads (default 2), `PERF_OPEN_RUNNING=0` keeps the open thread idle.
+- Output goes to `/tmp/pi-gui-perf/<time>/` (`report.md`, `report.json`, `*.cpuprofile`), or
+  `PERF_OUT`. The run is skipped unless `PERF_REAL_PROFILE=1`.
+
+First survey, with #265, #267 and #269 applied (391 threads, 3,628 model entries, 3 running
+threads, about 50 state pushes a second):
+
+| Scenario                         | Main busy | Renderer busy | Avg push | Result                                                  |
+| -------------------------------- | --------- | ------------- | -------- | ------------------------------------------------------- |
+| Idle                             | 52%       | 44%           | 911 KB   | 2,116 React commits in 15 s                             |
+| Typing                           | 53%       | 47%           | 912 KB   | Keystroke to frame 13 / 19 / 26 ms (median / p95 / max) |
+| Switch threads                   | 65%       | 79%           | 911 KB   | 330–450 ms per switch, p95 frame 46 ms                  |
+| Scroll                           | 53%       | 53%           | 911 KB   | p95 frame 18 ms                                         |
+| Open the largest thread (193 MB) | 84%       | 44%           | 924 KB   | 2.8 s to open, 258 ms of long tasks                     |
+| Second window                    | 69%       | 42%           | 935 KB   | State pushes double to 98 a second                      |
+
+Open findings:
+
+1. The orchestration check in `handleSessionEvent` deep-copies all workspaces and orchestration
+   children (648 KB) on every session event to search 10 entries: about 29% of main-process time.
+2. Each state push is still about 911 KB, most of it `orchestrationChildren`; unpacking pushes is
+   about 15% of renderer time.
+3. Every state push re-renders the whole sidebar and rebuilds its model (`buildThreadSidebarModel`,
+   `recencyBucketId`): 25,737 thread-row renders in 14 s of typing.
+4. Opening a 193 MB thread takes 2.8 s; 22% of main-process time is parsing the session file.
+5. A second window doubles state pushes, and copying state per window is 14% of main-process time.
+6. Switching threads takes 330–450 ms each.
+
 ## Features
 
 ### Run agents side by side
