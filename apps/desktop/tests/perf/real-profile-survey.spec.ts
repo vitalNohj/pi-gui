@@ -291,7 +291,15 @@ async function stopMain(harness: DesktopHarness) {
       cpuPercent: metric.cpu.percentCPUUsage,
       memoryMB: Math.round(metric.memory.workingSetSize / 1024),
     }));
-    return { profile, sends: perf.sends, processes };
+    // What main actually keeps, as opposed to garbage not yet collected.
+    await perf.post("HeapProfiler.collectGarbage");
+    const usage = process.memoryUsage();
+    const mainAfterGc = {
+      heapUsedMB: Math.round(usage.heapUsed / 1048576),
+      externalMB: Math.round((usage.external + usage.arrayBuffers) / 1048576),
+      rssMB: Math.round(usage.rss / 1048576),
+    };
+    return { profile, sends: perf.sends, processes, mainAfterGc };
   });
 }
 
@@ -581,6 +589,7 @@ async function measure(
     renderer: analyzeProfile(renderer.profile as unknown as CpuProfile),
     sends: main.sends,
     processes: main.processes,
+    mainAfterGc: main.mainAfterGc,
     page: renderer.page,
     load,
   };
@@ -594,6 +603,106 @@ async function waitForThreadSettled(window: Page, sessionId: string, timeout = 1
   await expect(window.getByTestId("timeline-pane")).toHaveAttribute("data-layout", "settled", {
     timeout,
   });
+}
+
+/**
+ * One thread switch split into phases, all in renderer time from the click: main confirms the
+ * selection (state push), the transcript arrives, the skeleton is gone, rows are on screen, and
+ * the layout has settled. Also records how big the transcript send was.
+ */
+async function openThreadPhased(
+  window: Page,
+  ref: { workspaceId: string; sessionId: string },
+) {
+  await window.evaluate((sessionId) => {
+    const g = globalThis.window as RendererGlobal & { __perfSwitch?: Record<string, unknown> };
+    const t: Record<string, number | null> = {
+      clickAt: null,
+      selected: null,
+      skeletonSeen: null,
+      transcript: null,
+      transcriptRows: null,
+      transcriptKB: null,
+      transcriptHandledMs: null,
+      noSkeleton: null,
+      rows: null,
+      settled: null,
+    };
+    // Rows already on screen belong to the previous thread; only new rows count.
+    for (const row of document.querySelectorAll(".timeline__virtual-row"))
+      (row as HTMLElement).dataset.perfOld = "1";
+    let start = performance.now();
+    const armedAt = start;
+    document.addEventListener(
+      "click",
+      () => {
+        start = performance.now();
+        t.clickAt = start - armedAt;
+      },
+      { capture: true, once: true },
+    );
+    const offState = g.piApp!.onStateChanged((state) => {
+      if (t.selected === null && state.selectedSessionId === sessionId)
+        t.selected = performance.now() - start;
+    });
+    const offTranscript = g.piApp!.onSelectedTranscriptChanged((payload) => {
+      if (t.transcript !== null || !payload || payload.sessionId !== sessionId) return;
+      const at = performance.now();
+      t.transcript = at - start;
+      const rows = "transcript" in payload ? payload.transcript : null;
+      t.transcriptRows = rows ? rows.length : null;
+      // Sized after the switch settles, so the probe doesn't add work inside the measured window.
+      (g as unknown as { __perfSwitchPayload?: unknown }).__perfSwitchPayload = payload;
+      // Listener order: this runs before or after the app's own handler; queue a task to see when
+      // the app's synchronous handling of the push is done.
+      setTimeout(() => (t.transcriptHandledMs = performance.now() - start), 0);
+    });
+    const poll = () => {
+      const now = performance.now() - start;
+      const pane = document.querySelector('[data-testid="timeline-pane"]') as HTMLElement | null;
+      const skeleton = document.querySelector('[data-testid="transcript-skeleton"]');
+      if (skeleton && t.skeletonSeen === null) t.skeletonSeen = now;
+      const newRows = document.querySelector(".timeline__virtual-row:not([data-perf-old])");
+      if (t.selected !== null) {
+        if (t.noSkeleton === null && !skeleton && (newRows || t.skeletonSeen !== null))
+          t.noSkeleton = now;
+        if (t.rows === null && newRows) t.rows = now;
+        if (t.settled === null && newRows && !skeleton && pane?.dataset.layout === "settled") {
+          t.settled = now;
+          offState();
+          offTranscript();
+          return;
+        }
+      }
+      if (now < 30_000) requestAnimationFrame(poll);
+    };
+    requestAnimationFrame(poll);
+    g.__perfSwitch = t;
+  }, ref.sessionId);
+  const opened = await openThread(window, ref);
+  await window.waitForTimeout(50);
+  const phases = await window.evaluate(() => {
+    const g = globalThis.window as unknown as {
+      __perfSwitch?: Record<string, number | null>;
+      __perfSwitchPayload?: unknown;
+    };
+    const t = g.__perfSwitch ?? {};
+    if (g.__perfSwitchPayload)
+      t.transcriptKB = Math.round(JSON.stringify(g.__perfSwitchPayload).length / 1024);
+    g.__perfSwitchPayload = undefined;
+    return t;
+  });
+  const round = (value: number | null | undefined) =>
+    value === null || value === undefined ? null : Math.round(value);
+  return {
+    ...opened,
+    phases: Object.fromEntries(
+      Object.entries(phases).map(([key, value]) => [
+        key,
+        key.endsWith("Rows") || key.endsWith("KB") ? value : round(value),
+      ]),
+    ),
+  };
 }
 
 async function openThread(window: Page, ref: { workspaceId: string; sessionId: string }) {
@@ -779,6 +888,7 @@ test("performance survey on a copy of the real profile", async () => {
   const scenarios = (name: string) => !ONLY || ONLY.includes(name);
   const results: ScenarioResult[] = [];
   let harness: DesktopHarness | undefined;
+  let memoryGuard: ReturnType<typeof setInterval> | undefined;
   try {
     const launchStarted = Date.now();
     harness = await launchDesktop(copy.userDataDir, {
@@ -796,6 +906,24 @@ test("performance survey on a copy of the real profile", async () => {
     });
     let window = await harness.firstWindow();
     const firstWindowMs = Date.now() - launchStarted;
+    // Safeguard: a test copy that falls behind can grow without bound, so stop it at a cap.
+    const MEMORY_CAP_MB = Number(process.env.PERF_MEMORY_CAP_MB ?? 3072);
+    const launched = harness;
+    memoryGuard = setInterval(() => {
+      void launched.electronApp
+        .evaluate(({ app }) =>
+          Math.max(...app.getAppMetrics().map((metric) => metric.memory.workingSetSize / 1024)),
+        )
+        .then(async (peakMB) => {
+          if (peakMB <= MEMORY_CAP_MB) return;
+          console.log(
+            `Stopped: a process reached ${Math.round(peakMB)} MB (cap ${MEMORY_CAP_MB} MB)`,
+          );
+          clearInterval(memoryGuard);
+          await launched.close().catch(() => undefined);
+        })
+        .catch(() => undefined);
+    }, 1000);
     const initial = await getDesktopState(window);
     await waitForThreadSettled(window, initial.selectedSessionId);
     const startup = {
@@ -936,6 +1064,22 @@ test("performance survey on a copy of the real profile", async () => {
       });
     }
 
+    if (scenarios("switch-phases")) {
+      // Same switches as switch-threads, each split into phases, plus the session file size.
+      const sizeOf = (id: string) =>
+        +((copy.sessions.find((s) => s.sessionRef.sessionId === id)?.bytes ?? 0) / 1048576).toFixed(
+          1,
+        );
+      await scenario("switch-phases", async () => {
+        const opens = [];
+        for (const target of [...switchTargets, longThread.sessionRef]) {
+          opens.push({ mb: sizeOf(target.sessionId), ...(await openThreadPhased(window, target)) });
+          await window.waitForTimeout(300);
+        }
+        return { opens };
+      });
+    }
+
     if (scenarios("scroll")) {
       await scenario("scroll", async () => {
         const box = (await window.getByTestId("timeline-pane").boundingBox())!;
@@ -992,9 +1136,94 @@ test("performance survey on a copy of the real profile", async () => {
 
     if (scenarios("open-largest")) {
       await scenario("open-largest", async () => {
-        const open = await openThread(window, largest.sessionRef);
-        const back = await openThread(window, longThread.sessionRef);
-        return { largest: open, back };
+        const open = await openThreadPhased(window, largest.sessionRef);
+        await window.waitForTimeout(300);
+        // How many images the window actually asked for, versus how many the thread has.
+        const imagesLoaded = await window.evaluate(() => ({
+          inDom: document.querySelectorAll("img").length,
+          byUrl: document.querySelectorAll('img[src^="pi-gui-image:"]').length,
+          byData: document.querySelectorAll('img[src^="data:"]').length,
+          requested: performance
+            .getEntriesByType("resource")
+            .filter((entry) => entry.name.startsWith("pi-gui-image:")).length,
+        }));
+        const again = await openThreadPhased(window, longThread.sessionRef);
+        await window.waitForTimeout(300);
+        // Second open: is anything cached after the first?
+        const reopen = await openThreadPhased(window, largest.sessionRef);
+        await window.waitForTimeout(300);
+        const back = await openThreadPhased(window, longThread.sessionRef);
+        return { largest: open, again, reopen, back, imagesLoaded };
+      });
+    }
+
+    if (scenarios("memory-largest")) {
+      // Main's memory after each step of opening the largest thread: what JS keeps after a
+      // collection, total resident memory, and the macOS footprint broken down by memory type.
+      const mainPid = await harness.electronApp.evaluate(() => process.pid);
+      const sample = async (step: string) => {
+        await window.waitForTimeout(1500);
+        const js = await harness!.electronApp.evaluate(async () => {
+          await (globalThis as MainGlobal).__perf!.post("HeapProfiler.collectGarbage");
+          const usage = process.memoryUsage();
+          const mb = (bytes: number) => Math.round(bytes / 1048576);
+          return {
+            heapUsedMB: mb(usage.heapUsed),
+            externalMB: mb(usage.external),
+            arrayBuffersMB: mb(usage.arrayBuffers),
+            rssMB: mb(usage.rss),
+          };
+        });
+        let footprint: Record<string, number> = {};
+        try {
+          const out = execFileSync("footprint", ["-p", String(mainPid)], { encoding: "utf8" });
+          // Rows: "<dirty> <unit>  <clean> <unit>  <reclaimable> <unit>  <regions>  <category>".
+          // Dirty memory is what counts toward the footprint.
+          const toMB = (value: string, unit: string) =>
+            Number(value) * ({ B: 1 / 1048576, KB: 1 / 1024, MB: 1, GB: 1024 }[unit] ?? 0);
+          for (const line of out.split("\n")) {
+            const match = line.match(
+              /^\s*([\d.]+) (B|KB|MB|GB)\s+[\d.]+ (?:B|KB|MB|GB)\s+[\d.]+ (?:B|KB|MB|GB)\s+\d+\s+(.+)$/,
+            );
+            if (match) {
+              const value = toMB(match[1]!, match[2]!);
+              if (value >= 5) footprint[match[3]!.trim()] = Math.round(value);
+              continue;
+            }
+            const total = line.match(/phys_footprint: ([\d.]+) (B|KB|MB|GB)/);
+            if (total) footprint["phys_footprint"] = Math.round(toMB(total[1]!, total[2]!));
+          }
+        } catch (error) {
+          footprint = { error: -1 };
+          console.log("footprint failed", error instanceof Error ? error.message : error);
+        }
+        return { step, ...js, footprint };
+      };
+      await scenario("memory-largest", async () => {
+        const steps = [await sample("start (long thread open)")];
+        await openThreadPhased(window, largest.sessionRef);
+        steps.push(await sample("largest opened"));
+        await openThreadPhased(window, longThread.sessionRef);
+        steps.push(await sample("back to long thread"));
+        await openThreadPhased(window, largest.sessionRef);
+        steps.push(await sample("largest reopened"));
+        // Scroll up through the largest thread so more images load.
+        const pane = window.getByTestId("timeline-pane");
+        await pane.hover();
+        for (let i = 0; i < 40; i += 1) {
+          await window.mouse.wheel(0, -1500);
+          await window.waitForTimeout(60);
+        }
+        const loaded = await window.evaluate(
+          () =>
+            performance
+              .getEntriesByType("resource")
+              .filter((entry) => entry.name.startsWith("pi-gui-image:")).length,
+        );
+        steps.push({ ...(await sample("scrolled up through largest")), loaded });
+        await openThreadPhased(window, longThread.sessionRef);
+        steps.push(await sample("back to long thread again"));
+        return { steps };
       });
     }
 
@@ -1021,6 +1250,7 @@ test("performance survey on a copy of the real profile", async () => {
     console.log(`Report: ${join(OUT, "report.md")}`);
     if (Object.keys(failures).length) console.log(`Failed scenarios: ${JSON.stringify(failures)}`);
   } finally {
+    clearInterval(memoryGuard);
     await harness?.close().catch(() => undefined);
     if (process.env.PERF_KEEP_PROFILE !== "1")
       await rm(copy.root, { recursive: true, force: true });
