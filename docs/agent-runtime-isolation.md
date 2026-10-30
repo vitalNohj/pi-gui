@@ -148,4 +148,12 @@ automatically. This is profile isolation, not a filesystem sandbox: tools can st
 workspace files when the user runs them.
 
 The installed `/Applications/pi-gui.app` and original session data were not replaced or
-restarted. Physical-keyboard/Gunz and visible real-provider confirmation are still pending.
+restarted. The user tried the standalone test build, reported “It felt nice,” and closed it.
+This is positive subjective feedback, not a detailed scenario log: the specific Gunz launch
+and a formal visible real-provider conversation journey remain unverified.
+
+Proposed upstream bodies are retained as drafts in
+[`upstream-proposals/runtime-isolation-issue.md`](upstream-proposals/runtime-isolation-issue.md)
+and [`upstream-proposals/runtime-isolation-pr.md`](upstream-proposals/runtime-isolation-pr.md).
+No upstream issue or PR has been created. The combined fork branch must be narrowed to the
+runtime-only change before submitting an upstream PR.
