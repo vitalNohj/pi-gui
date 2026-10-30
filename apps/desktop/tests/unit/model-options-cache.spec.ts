@@ -16,6 +16,7 @@ function model(providerId: string, modelId: string, available = true): RuntimeMo
     authType: "api_key",
     reasoning: false,
     supportsImages: false,
+    scope: "all",
   };
 }
 
@@ -65,25 +66,20 @@ test("model options reuse unchanged catalog inputs through fresh runtime and set
   expect(buildModelOptions(wrapped)).toBe(options);
 });
 
-test("model options invalidate when enabled pattern values change", () => {
+test("model options invalidate when the runtime updates native model scope", () => {
   const runtime = runtimeSnapshot();
   const initial = buildModelOptions(runtime);
   const filtered: RuntimeSnapshot = {
     ...runtime,
-    settings: { ...runtime.settings, enabledModelPatterns: ["openai/**"] },
+    models: runtime.models.map((entry) => ({
+      ...entry,
+      scope: entry.providerId === "openai" ? "listed" : "off",
+    })),
   };
   const options = buildModelOptions(filtered);
   expect(options).not.toBe(initial);
   expect(options.map((option) => option.modelId)).toEqual(["gpt-5"]);
-  expect(
-    buildModelOptions({
-      ...filtered,
-      settings: { ...filtered.settings, enabledModelPatterns: ["anthropic/**"] },
-    }).map((option) => option.modelId),
-  ).toEqual(["claude"]);
-  expect(
-    buildModelOptions({ ...runtime, settings: { ...runtime.settings, enabledModelPatterns: [] } }),
-  ).toEqual(initial);
+  expect(buildModelOptions({ ...filtered })).toBe(options);
 });
 
 test("model options invalidate when models change and preserve availability filtering", () => {
@@ -115,7 +111,7 @@ test("model options cache an empty match result and tolerate a missing runtime",
   const runtime = runtimeSnapshot();
   const filtered: RuntimeSnapshot = {
     ...runtime,
-    settings: { ...runtime.settings, enabledModelPatterns: ["missing/**"] },
+    models: runtime.models.map((entry) => ({ ...entry, scope: "off" })),
   };
   const options = buildModelOptions(filtered);
   expect(options).toEqual([]);

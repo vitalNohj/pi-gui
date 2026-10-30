@@ -371,31 +371,24 @@ test("a transcript patch carries only the changed rows and rebuilds the same tra
   expect(selectedTranscriptPatch(record(rows), { ...record(rows), sessionId: "other" })).toBe(
     undefined,
   );
-  const tooFar = { workspaceId: "ws", sessionId: "live", start: 5, deleteCount: 1, rows: [] };
+  const tooFar = {
+    workspaceId: "ws",
+    sessionId: "live",
+    baseLength: 1,
+    start: 5,
+    deleteCount: 1,
+    rows: [],
+  };
   expect(applySelectedTranscriptPatch(record([row("a")]), tooFar)).toBe(undefined);
   expect(applySelectedTranscriptPatch(null, tooFar)).toBe(undefined);
-});
-
-test("a state push without the model catalog keeps the catalog the window has", () => {
-  const runtimeByWorkspace = { ws: {} } as unknown as DesktopAppState["runtimeByWorkspace"];
-  const first = snapshot(1, { runtimeByWorkspace });
-  const { runtimeByWorkspace: _omitted, ...withoutCatalog } = snapshot(2, {
-    composerDraft: "next",
-  });
-
-  // Before the window has any state, such a push is ignored: the state pull brings it all.
-  expect(reduceAll([{ type: "state-pushed", state: withoutCatalog }]).liveSnapshot).toBeNull();
-
-  const model = reduceAll([
-    { type: "state-pushed", state: first },
-    { type: "state-pushed", state: withoutCatalog },
-  ]);
-  expect(model.liveSnapshot?.composerDraft).toBe("next");
-  expect(model.liveSnapshot?.runtimeByWorkspace).toBe(runtimeByWorkspace);
-
-  const replaced = snapshot(3);
-  const updated = reduceDesktopHydration(model, { type: "state-pushed", state: replaced });
-  expect(updated.liveSnapshot).toBe(replaced);
+  // A patch made against a transcript of another length does not fit, even when its range does.
+  const otherBase = selectedTranscriptPatch(record([row("a"), row("b")]), record([row("a")]))!;
+  expect(applySelectedTranscriptPatch(record([row("a"), row("b")]), otherBase)).toEqual(
+    record([row("a")]),
+  );
+  expect(applySelectedTranscriptPatch(record([row("a"), row("b"), row("c")]), otherBase)).toBe(
+    undefined,
+  );
 });
 
 test("an extension UI update patches only that session's UI and ignores stale ones", () => {
@@ -432,4 +425,26 @@ test("an extension UI update patches only that session's UI and ignores stale on
     update: { sessionKey: "w:s", ui: ui("Spinner 1"), revision: 6 },
   });
   expect(beforeState.liveSnapshot).toBeNull();
+});
+
+test("a state push without the model catalog keeps the catalog the window has", () => {
+  const runtimeByWorkspace = { ws: {} } as unknown as DesktopAppState["runtimeByWorkspace"];
+  const first = snapshot(1, { runtimeByWorkspace });
+  const { runtimeByWorkspace: _omitted, ...withoutCatalog } = snapshot(2, {
+    composerDraft: "next",
+  });
+
+  // Before the window has any state, such a push is ignored: the state pull brings it all.
+  expect(reduceAll([{ type: "state-pushed", state: withoutCatalog }]).liveSnapshot).toBeNull();
+
+  const model = reduceAll([
+    { type: "state-pushed", state: first },
+    { type: "state-pushed", state: withoutCatalog },
+  ]);
+  expect(model.liveSnapshot?.composerDraft).toBe("next");
+  expect(model.liveSnapshot?.runtimeByWorkspace).toBe(runtimeByWorkspace);
+
+  const replaced = snapshot(3);
+  const updated = reduceDesktopHydration(model, { type: "state-pushed", state: replaced });
+  expect(updated.liveSnapshot).toBe(replaced);
 });

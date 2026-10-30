@@ -56,8 +56,9 @@ function viewFromState(state: DesktopAppState): WindowViewState {
 
 const NO_ORCHESTRATION_CHILDREN: DesktopAppState["orchestrationChildren"] = [];
 
-// The window never reads orchestration children, and they carry every child
-// thread's transcript, so pushes leave them out. getState() still returns them.
+// Full child records carry every child thread's transcript and the window never
+// reads them, so pushes drop them. The window draws the tree from childThreadLinks,
+// which every push and every getState() reply carries.
 function stateForPush(state: DesktopAppState): DesktopAppState {
   return state.orchestrationChildren.length === 0
     ? state

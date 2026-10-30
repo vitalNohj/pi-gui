@@ -23,6 +23,7 @@ export const SESSION_METHODS = [
   "forkSession",
   "openSession",
   "archiveSession",
+  "archiveSessionIfIdle",
   "unarchiveSession",
   "sendUserMessage",
   "replaceQueuedMessages",
@@ -73,6 +74,7 @@ export const RUNTIME_METHODS = [
   "setProjectScopedModelPatterns",
   "getGlobalModelSettings",
   "getCurrentModelSettings",
+  "scopeModels",
   "setSkillEnabled",
   "setExtensionEnabled",
 ] as const satisfies readonly (keyof RuntimeSupervisor)[];
@@ -199,8 +201,13 @@ export interface RuntimeHostMethods {
     identity: RuntimeSessionIdentity,
     ...args: BridgeArgs<OrchestrationRuntimeBridge["createChildThread"]>
   ): BridgeResult<OrchestrationRuntimeBridge["createChildThread"]>;
+  archiveChildThreads(
+    identity: RuntimeSessionIdentity,
+    ...args: BridgeArgs<OrchestrationRuntimeBridge["archiveChildThreads"]>
+  ): BridgeResult<OrchestrationRuntimeBridge["archiveChildThreads"]>;
   listThreads(
     identity: RuntimeSessionIdentity,
+    ...args: BridgeArgs<OrchestrationRuntimeBridge["listThreads"]>
   ): BridgeResult<OrchestrationRuntimeBridge["listThreads"]>;
   readThread(
     identity: RuntimeSessionIdentity,
@@ -230,6 +237,8 @@ export const SESSION_CATALOG_METHODS = [
   "listSessions",
   "getSession",
   "upsertSession",
+  "setStoppedReplyId",
+  "archiveSessionUnlessStopped",
   "deleteSession",
 ] as const satisfies readonly (keyof SessionFileCatalogStorage["sessions"])[];
 export const WORKTREE_CATALOG_METHODS = [

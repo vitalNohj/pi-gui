@@ -108,7 +108,7 @@ private session content is not committed with this report.
 - **Static checks:** `pnpm lint`, `pnpm check:architecture`, and `pnpm typecheck` passed.
   Verification used Node 24.22.2 and repository-local pnpm 10.25.0. The host defaults
   (Node 26 / pnpm 11) are outside the documented setup; packaging initially timed out there.
-- **Baseline is not fully green:** `pnpm check` stops at an existing formatting issue in
+- **Historical baseline on the original candidate:** `pnpm check` stopped at an existing formatting issue in
   `tests/core/composer-attachments-while-running.spec.ts`. Running the subsequent checks
   separately reached the desktop-unit suite: 363 passed, 1 skipped, 1 failed. The failure
   is unchanged `tests/unit/app-operations.spec.ts:75`, where macOS `/var` versus `/private/var`
@@ -119,6 +119,33 @@ private session content is not committed with this report.
   so they were not run while preserving the user's active session. Scripted localhost
   provider traffic and automated Electron input are not substitutes for those proofs.
 
-The installed app and original session data were not replaced or restarted. The candidate
-bundle is `apps/desktop/release-runtime-isolation-final/mac-arm64/pi-gui.app`; it must not
-replace `/Applications/pi-gui.app` or open the live profile until the user chooses to switch.
+## Updated-fork test build (2026-10-30)
+
+Integrated with upstream `faf8edd6` on the fork’s `local/combined-build` branch. Native model
+scoping and the new child-thread/archive and stopped-run catalog operations are forwarded
+across the runtime boundary. The earlier baseline failures above are historical: the updated
+fork passes the complete `pnpm check`, including 439 desktop unit tests (one platform skip).
+
+- **Updated Electron integration:** 24 tests passed, including blocked-runtime typing,
+  runtime loss, Stop, idle-session release, image attachments during a run, child-thread
+  startup/archive, scheduled tools, extension dialogs/cards/session isolation, workspace
+  links, model scope, and selection actions.
+- **Updated packaged artifact:** the packaged thread/runtime smoke and real integrated
+  terminal passed (2 tests), along with packaged runtime dependency/model verification.
+- **Updated typing capture:** the same copied 219.1 MB thread, ACP extension, eight 30 KB
+  shell tools, nine localhost requests and exact 165-character draft completed. Automated
+  key-dispatch p95 was 34.9 ms (max 114.7 ms); maximum recorded main event-loop delay was
+  66.2 ms. This is one post-merge diagnostic run, not a new controlled before/after pair;
+  the paired table above remains the evidence for the causal improvement.
+
+The separate local bundle is `~/Applications/Pi GUI Runtime Test.app`. A test-only packaged
+entry point defaults to `~/Library/Application Support/pi-gui-runtime-test-20261030/`
+with separate `user-data` and `agent` directories. Its copied catalog session paths are
+rebased into that agent copy; runnable schedules, keep-warm, sync, and silent updates are
+disabled. The test packaging configuration and credentials are not part of the source patch.
+The copied profile is retained for manual testing; new test conversations do not migrate back
+automatically. This is profile isolation, not a filesystem sandbox: tools can still edit real
+workspace files when the user runs them.
+
+The installed `/Applications/pi-gui.app` and original session data were not replaced or
+restarted. Physical-keyboard/Gunz and visible real-provider confirmation are still pending.

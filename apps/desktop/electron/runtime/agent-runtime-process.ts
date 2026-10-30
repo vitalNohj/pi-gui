@@ -36,6 +36,7 @@ type DesktopCapabilities = Pick<
   | "viewHostAction"
   | "viewDiagnostic"
   | "createChildThread"
+  | "archiveChildThreads"
   | "listThreads"
   | "readThread"
   | "sendMessageToThread"

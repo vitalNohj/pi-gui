@@ -142,18 +142,6 @@ function mergeLiveSnapshot(
   return current && incoming.revision < current.revision ? current : incoming;
 }
 
-// A push without the model catalog keeps the one the window has. Keeping the same object
-// also lets the model lists built from it stay cached.
-function withCatalog(
-  pushed: PiDesktopStatePush,
-  current: DesktopAppState | null,
-): DesktopAppState | null {
-  if (pushed.runtimeByWorkspace) {
-    return pushed as DesktopAppState;
-  }
-  return current ? { ...pushed, runtimeByWorkspace: current.runtimeByWorkspace } : null;
-}
-
 function selectedSessionKey(snapshot: DesktopAppState | null): string {
   if (!snapshot) {
     return "";
@@ -240,11 +228,17 @@ export function reduceDesktopHydration(
         stateFailed: current.liveSnapshot === null,
       };
     case "state-pushed": {
-      const state = withCatalog(event.state, current.liveSnapshot);
-      if (!state) {
+      // A push without the model catalog keeps the one the window has. Keeping the same
+      // object also lets the model lists built from it stay cached.
+      const runtimeByWorkspace =
+        event.state.runtimeByWorkspace ?? current.liveSnapshot?.runtimeByWorkspace;
+      if (!runtimeByWorkspace) {
         // No catalog yet: the state pull, or the first push after load, brings the whole state.
         return current;
       }
+      const state = event.state.runtimeByWorkspace
+        ? (event.state as DesktopAppState)
+        : { ...event.state, runtimeByWorkspace };
       return {
         ...withLiveSnapshot(current, mergeLiveSnapshot(current.liveSnapshot, state)),
         stateFailed: false,

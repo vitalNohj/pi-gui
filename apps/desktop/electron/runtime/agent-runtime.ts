@@ -172,9 +172,11 @@ rpc.setHandlers({
         {
           ...RUNTIME_BUILTINS[0],
           factory: createOrchestrationRuntimeExtension({
+            archiveChildThreads: (ctx, threadIds) =>
+              rpc.call("archiveChildThreads", [identity(ctx), threadIds]),
             createChildThread: (ctx, input) =>
               rpc.call("createChildThread", [identity(ctx), input]),
-            listThreads: (ctx) => rpc.call("listThreads", [identity(ctx)]),
+            listThreads: (ctx, input) => rpc.call("listThreads", [identity(ctx), input]),
             readThread: (ctx, threadId) => rpc.call("readThread", [identity(ctx), threadId]),
             sendMessageToThread: (ctx, input) =>
               rpc.call("sendMessageToThread", [identity(ctx), input]),

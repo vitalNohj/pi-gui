@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { CloseIcon } from "../../../ui/icons";
 import { ANNOTATION_ROOT_ATTRIBUTE, type OpenAnnotation } from "./annotation-markers";
 import { rangeToOffsets } from "./text-offsets";
@@ -53,8 +53,9 @@ function elementOf(node: Node): Element | null {
   return node instanceof Element ? node : node.parentElement;
 }
 
-// Buttons and markers around message text: a drag that runs onto them still means the text.
-const ROW_CHROME = ".timeline-item__actions, .annotation-markers";
+// Buttons, markers and the Working line around message text: a drag that runs onto them
+// still means the text.
+const ROW_CHROME = ".timeline-item__actions, .annotation-markers, .timeline-working";
 
 /** Whether `range` covers any text a reader would take as content, not row chrome. */
 function coversContent(range: Range): boolean {
@@ -72,8 +73,9 @@ function coversContent(range: Range): boolean {
 
 /**
  * A non-empty selection of one message's text in this timeline pane: the message where the
- * drag began. Running past its first or last line (onto the gap between rows or a Fork
- * button) still selects just that message; any other text makes it a different selection.
+ * drag began. Running past its first or last line (onto the gap between rows, a Fork
+ * button or the Working line) still selects just that message; any other text makes it a
+ * different selection.
  */
 function readTranscriptSelection(pane: HTMLElement): TranscriptSelection | null {
   const selection = window.getSelection();
@@ -128,6 +130,11 @@ const POPOVER_GAP = 8;
 function popoverTop(anchor: DOMRect, height: number): number {
   const above = anchor.top - height - POPOVER_GAP;
   return above >= POPOVER_GAP ? above : anchor.bottom + POPOVER_GAP;
+}
+
+/** Starts at `preferred` but stays inside the window's right edge, then its left edge. */
+function popoverLeft(preferred: number, width: number): number {
+  return Math.max(POPOVER_GAP, Math.min(preferred, window.innerWidth - width - POPOVER_GAP));
 }
 
 /**
@@ -249,6 +256,8 @@ export function useAnnotationSelection({
       {selection && !editor ? (
         <SelectionActions
           anchor={selection.rect}
+          // A different selection starts without the "Copied" confirmation.
+          key={selection.quote}
           platform={platform}
           quote={selection.quote}
           onAdd={addSelection}
@@ -285,18 +294,26 @@ function SelectionActions({
   readonly quote: string;
   readonly onAdd: () => void;
 }) {
+  // Bumped on each successful copy, so a repeat copy restarts the confirmation.
+  const [copyCount, setCopyCount] = useState(0);
   const [copied, setCopied] = useState(false);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  // The pill is wide enough to run off the right edge, so measure it (the label changes its
+  // width) and place it before it paints.
+  const [width, setWidth] = useState(0);
+  useLayoutEffect(() => {
+    setWidth(popoverRef.current?.getBoundingClientRect().width ?? 0);
+  }, [copied]);
   useEffect(() => {
-    if (!copied) return undefined;
+    if (copyCount === 0) return undefined;
+    setCopied(true);
     const timer = window.setTimeout(() => setCopied(false), COPIED_FEEDBACK_MS);
     return () => window.clearTimeout(timer);
-  }, [copied]);
-  // A different selection starts without the confirmation.
-  useEffect(() => setCopied(false), [quote]);
+  }, [copyCount]);
 
   const copy = () => {
     navigator.clipboard.writeText(quote).then(
-      () => setCopied(true),
+      () => setCopyCount((count) => count + 1),
       (error: unknown) => console.error("[renderer] navigator.clipboard.writeText failed", error),
     );
   };
@@ -304,7 +321,8 @@ function SelectionActions({
   return (
     <div
       className="annotation-popover annotation-add"
-      style={{ top: popoverTop(anchor, 32), left: Math.max(POPOVER_GAP, anchor.left) }}
+      ref={popoverRef}
+      style={{ top: popoverTop(anchor, 32), left: popoverLeft(anchor.left, width) }}
       // Keep the transcript selection alive through a click on either button.
       onMouseDown={(event) => event.preventDefault()}
     >

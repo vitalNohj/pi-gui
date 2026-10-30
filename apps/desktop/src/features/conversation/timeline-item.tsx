@@ -9,10 +9,13 @@ import type {
   TimelineToolCall,
   TimelineSummary,
   TimelineTurnMarker,
+  TimelineWorkingIndicator,
 } from "../../../contracts/timeline-types";
 import type { ScheduledTaskOrigin } from "../../../contracts/scheduled-tasks";
+import { parseCrossProjectMessage } from "../../../contracts/thread-message";
 import { extensionToolRowLabel } from "../../../contracts/tool-labels";
 import { useExtensionToolLabel } from "../extensions/extension-tool-labels";
+import { useRunningLabel } from "./hooks/use-running-label";
 import {
   AnnotationMarkers,
   type AnnotationMarker,
@@ -23,7 +26,7 @@ import { SentAnnotations } from "./annotations/sent-annotations";
 import { ExtensionCardItem, type RunExtensionAction } from "./extension-card";
 import { ImageAttachmentThumb } from "./image-attachment-thumb";
 import { MessageMarkdown } from "./message-markdown";
-import { stringifyToolValue, toolOutputImageSrc, toolOutputImages } from "./tool-output-images";
+import { stringifyToolValue, toolOutputImages } from "./tool-output-images";
 import { TurnChangesCard, type OpenTurnChange } from "./turn-changes-card";
 import type { WorkspaceFileLine } from "./workspace-file-line";
 import { InlineDiff, extractDiffFromOutput } from "../../ui/diff-inline";
@@ -70,6 +73,8 @@ export function TimelineItem({
   switch (item.kind) {
     case "turn-marker":
       return <TimelineTurnMarkerItem item={item} />;
+    case "working":
+      return <TimelineWorkingItem item={item} />;
     case "turn-changes":
       return <TurnChangesCard turn={item.turn} onOpen={onOpenTurnChange} />;
     case "message":
@@ -142,6 +147,10 @@ function TimelineMessage({
   readonly onOpenAnnotation?: OpenAnnotation;
 }) {
   const articleRef = useRef<HTMLElement | null>(null);
+  const crossProject = useMemo(
+    () => (item.role === "user" ? parseCrossProjectMessage(item.text) : null),
+    [item.role, item.text],
+  );
   const annotated = useMemo(
     () => (item.role === "user" ? parseAnnotatedPrompt(item.text) : null),
     [item.role, item.text],
@@ -157,13 +166,18 @@ function TimelineMessage({
     ) : null;
 
   if (item.role === "user") {
-    const body = annotated ? annotated.body : item.text;
+    const body = annotated ? annotated.body : (crossProject?.body ?? item.text);
     return (
       <article className="timeline-item timeline-item--user" ref={articleRef}>
         <div className="timeline-item__user-stack">
           {scheduledOrigin ? (
             <div className="timeline-item__scheduled-origin" data-testid="sent-by-scheduled-task">
               Sent by scheduled task
+            </div>
+          ) : null}
+          {crossProject ? (
+            <div className="timeline-item__project-origin" data-testid="message-project-origin">
+              From project {crossProject.project}
             </div>
           ) : null}
           <div className="timeline-item__bubble">
@@ -347,7 +361,7 @@ function TimelineToolCallItem({
               className="timeline-tool__image"
               key={`${item.callId}:${index}`}
               name={`${item.toolName} image ${index + 1}`}
-              src={toolOutputImageSrc(image)}
+              src={image.src}
             />
           ))}
         </div>
@@ -483,6 +497,15 @@ function TimelineTurnMarkerItem({ item }: { readonly item: TimelineTurnMarker })
   return (
     <div className="timeline-turn-marker" data-testid="timeline-turn-marker">
       <span className="timeline-turn-marker__label">{`Worked for ${formatWorkedDuration(item.durationMs)}`}</span>
+    </div>
+  );
+}
+
+function TimelineWorkingItem({ item }: { readonly item: TimelineWorkingIndicator }) {
+  const label = useRunningLabel(item.startedAt);
+  return (
+    <div className="timeline-working" data-testid="timeline-working">
+      <span className="timeline-working__label">{label}</span>
     </div>
   );
 }

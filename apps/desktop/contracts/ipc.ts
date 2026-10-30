@@ -14,6 +14,7 @@ import type {
   SessionTreeSnapshot,
 } from "@pi-gui/session-driver/types";
 import type { ClipboardImageRead } from "./composer-attachments";
+import type { DesktopEditorList } from "./editors";
 import type { SessionRef } from "@pi-gui/session-driver/types";
 import type { SaveTaskWorkbenchTemplateInput, TaskWorkbenchTemplate } from "./workbench";
 import type {
@@ -134,6 +135,9 @@ export const desktopIpc = {
   reorderWorkspaces: "pi-gui:reorder-workspaces",
   reorderPinnedSessions: "pi-gui:reorder-pinned-sessions",
   openWorkspaceInFinder: "pi-gui:open-workspace-in-finder",
+  listEditors: "pi-gui:list-editors",
+  setPreferredEditor: "pi-gui:set-preferred-editor",
+  openWorkspaceInEditor: "pi-gui:open-workspace-in-editor",
   createWorktree: "pi-gui:create-worktree",
   removeWorktree: "pi-gui:remove-worktree",
   openSkillInFinder: "pi-gui:open-skill-in-finder",
@@ -218,6 +222,8 @@ export const desktopIpc = {
   getSessionTree: "pi-gui:get-session-tree",
   navigateSessionTree: "pi-gui:navigate-session-tree",
   toggleWindowMaximize: "pi-gui:toggle-window-maximize",
+  minimizeWindow: "pi-gui:minimize-window",
+  closeWindow: "pi-gui:close-window",
   listWorkspaceFiles: "pi-gui:list-workspace-files",
   readWorkspaceFile: "pi-gui:read-workspace-file",
   revealWorkspaceFile: "pi-gui:reveal-workspace-file",
@@ -246,6 +252,7 @@ export const desktopCommands = {
   toggleTerminal: "toggle-terminal",
   toggleSidePanel: "toggle-side-panel",
   toggleReview: "toggle-review",
+  newSidePanelTab: "new-side-panel-tab",
   closeFocusedSurface: "close-focused-surface",
   toggleSidebar: "toggle-sidebar",
   openCommandPalette: "open-command-palette",
@@ -596,6 +603,7 @@ export function getDesktopCommandFromShortcut(
   const isK = lowerKey === "k" || input.code === "KeyK";
   const isP = lowerKey === "p" || input.code === "KeyP";
   const isN = lowerKey === "n" || input.code === "KeyN";
+  const isT = lowerKey === "t" || input.code === "KeyT";
   const isShiftO = input.shift && (lowerKey === "o" || input.code === "KeyO");
   const isShiftR = input.shift && isR;
   const isShiftA = input.shift && (lowerKey === "a" || input.code === "KeyA");
@@ -629,6 +637,10 @@ export function getDesktopCommandFromShortcut(
 
   if (!input.shift && isP) {
     return desktopCommands.openFilePalette;
+  }
+
+  if (!input.shift && isT) {
+    return desktopCommands.newSidePanelTab;
   }
 
   if ((!input.shift && isN) || isShiftO) {
@@ -669,12 +681,14 @@ export function isPaletteCommand(command: PiDesktopCommand | undefined): boolean
  * Commands that act once per press and only from the platform modifier. macOS
  * Control chords stay with text fields, and off macOS the terminal keeps Control
  * chords. Holding Archive would otherwise archive each next thread in turn, and
- * holding Review would flicker the panel.
+ * holding Review would flicker the panel. New Tab is the exception in the terminal,
+ * where the shell keeps it to open another terminal.
  */
 export function isSinglePressCommand(command: PiDesktopCommand | undefined): boolean {
   return (
     isPaletteCommand(command) ||
     command === desktopCommands.toggleReview ||
+    command === desktopCommands.newSidePanelTab ||
     command === desktopCommands.renameThread ||
     command === desktopCommands.archiveThread
   );
@@ -700,8 +714,16 @@ export function isCloseFocusedSurfaceShortcut(input: {
   return input.key.toLowerCase() === "w" || input.code === "KeyW";
 }
 
+/**
+ * Main passes this to the renderer when the window is frameless and the app
+ * must draw its own title bar with minimize, maximize and close (Linux).
+ */
+export const drawWindowControlsArgument = "--pi-draw-window-controls";
+
 export interface PiDesktopApi {
   platform: NodeJS.Platform;
+  /** True when the window has no native title bar and the app draws its own. */
+  drawsWindowControls: boolean;
   versions: NodeJS.ProcessVersions;
   ping(): Promise<string>;
   getState(): Promise<DesktopAppState>;
@@ -724,6 +746,9 @@ export interface PiDesktopApi {
   reorderWorkspaces(workspaceOrder: readonly string[]): Promise<DesktopAppState>;
   reorderPinnedSessions(pinnedSessionOrder: readonly string[]): Promise<DesktopAppState>;
   openWorkspaceInFinder(workspaceId: string): Promise<void>;
+  listEditors(): Promise<DesktopEditorList>;
+  setPreferredEditor(editorId: string): Promise<DesktopEditorList>;
+  openWorkspaceInEditor(workspaceId: string, editorId: string): Promise<DesktopEditorList>;
   createWorktree(input: CreateWorktreeInput): Promise<DesktopAppState>;
   removeWorktree(input: RemoveWorktreeInput): Promise<DesktopAppState>;
   openSkillInFinder(workspaceId: string, filePath: string): Promise<void>;
@@ -904,6 +929,8 @@ export interface PiDesktopApi {
   setReviewFileReviewed(input: SetReviewFileReviewedInput): Promise<SetReviewFileReviewedResult>;
   changeReviewFileStage(input: ChangeReviewFileStageInput): Promise<ChangeReviewFileStageResult>;
   toggleWindowMaximize(): Promise<void>;
+  minimizeWindow(): void;
+  closeWindow(): void;
   openExternal(url: string): Promise<void>;
   getThemeMode(): Promise<"system" | "light" | "dark">;
   getResolvedTheme(): Promise<"light" | "dark">;

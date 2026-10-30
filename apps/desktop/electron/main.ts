@@ -25,9 +25,10 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { augmentPosixPath } from "../scripts/augment-path.cjs";
 import { DesktopAppStore } from "./application/app-store";
-import { TRANSCRIPT_IMAGE_SCHEME } from "./application/app-store-utils";
+import { TOOL_IMAGE_SCHEME } from "../contracts/tool-output-images";
 import { WindowOwner } from "./windows/window-owner";
 import { PendingComposerDraftFlusher } from "./windows/pending-draft-flush";
+import { windowChromeArguments, windowChromeOptions } from "./windows/window-chrome";
 import { TurnCheckpointStore } from "./workbench/checkpoint-store";
 import { DESKTOP_EXTENSION_SCHEME } from "./extensions/extension-view-owner";
 import { performExtensionViewHostAction } from "./extensions/extension-view-actions";
@@ -51,6 +52,7 @@ import { NotificationManager } from "./platform/notification-manager";
 import { NotificationPermissionService } from "./platform/notification-permission";
 import { checkForUpdate, initUpdateChecker, openReleasesPage } from "./platform/update-checker";
 import { ThemeManager } from "./platform/theme-manager";
+import { EditorService } from "./platform/editors/editor-service";
 import { windowBackgroundFor } from "../contracts/theme";
 import { TerminalService } from "./platform/terminal-service";
 import type { DesktopAppState, DesktopAppViewState } from "../contracts/desktop-state";
@@ -86,7 +88,7 @@ protocol.registerSchemesAsPrivileged([
     scheme: DESKTOP_EXTENSION_SCHEME,
     privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true },
   },
-  { scheme: TRANSCRIPT_IMAGE_SCHEME, privileges: { standard: true, secure: true } },
+  { scheme: TOOL_IMAGE_SCHEME, privileges: { standard: true, secure: true } },
 ]);
 
 const isDev = Boolean(process.env.ELECTRON_RENDERER_URL);
@@ -99,6 +101,7 @@ let extensionViewOwner: DesktopExtensionViewHost | undefined;
 let agentRuntimeProcess: AgentRuntimeProcess | undefined;
 let windowOwner: WindowOwner;
 const themeManager = new ThemeManager();
+const editorService = new EditorService();
 let mainWindow: BrowserWindow | null = null;
 let notificationManager: NotificationManager | undefined;
 let notificationPermissionService: NotificationPermissionService | undefined;
@@ -184,13 +187,17 @@ const NEW_WINDOW_MENU_ITEM_ID = "file.new-window";
 
 function createStoreBackedOrchestrationRuntimeBridge(): OrchestrationRuntimeBridge {
   return {
+    archiveChildThreads: async (ctx, threadIds) => {
+      await store.initialize();
+      return store.archiveChildThreadsToolResult(sessionRefFromExtensionContext(ctx), threadIds);
+    },
     createChildThread: async (ctx, input) => {
       await store.initialize();
       return store.createChildThreadToolResult(sessionRefFromExtensionContext(ctx), input);
     },
-    listThreads: async (ctx) => {
+    listThreads: async (ctx, input) => {
       await store.initialize();
-      return store.listThreadsToolResult(sessionRefFromExtensionContext(ctx));
+      return store.listThreadsToolResult(sessionRefFromExtensionContext(ctx), input.workspace);
     },
     readThread: async (ctx, threadId) => {
       await store.initialize();
@@ -478,10 +485,8 @@ function createWindow(): BrowserWindow {
     minHeight: 600,
     transparent: enableTransparency,
     vibrancy: process.platform === "darwin" && enableTransparency ? "under-window" : undefined,
-    titleBarStyle: "hiddenInset",
-    autoHideMenuBar: process.platform !== "darwin",
+    ...windowChromeOptions(process.platform),
     backgroundColor: enableTransparency ? "#00000000" : currentWindowBackground(),
-    trafficLightPosition: { x: 18, y: 18 },
     show: false,
     icon: appIcon,
     webPreferences: {
@@ -491,6 +496,7 @@ function createWindow(): BrowserWindow {
       sandbox: true,
       // Keep hidden test windows responsive so Playwright exercises the same UI flows.
       backgroundThrottling: !backgroundTestMode,
+      additionalArguments: windowChromeArguments(process.platform),
     },
   });
 
@@ -598,8 +604,13 @@ function createWindow(): BrowserWindow {
       (terminalFocused || sidePanelFocusedWebContentsIds.has(webContentsId));
     if (terminalFocused) {
       // Control chords belong to the shell, so only macOS Command chords open
-      // a palette or act on the thread from the terminal.
-      if (process.platform === "darwin" && isSinglePressCommand(command)) {
+      // a palette or act on the thread from the terminal. New Tab stays with the
+      // terminal, which opens another shell.
+      if (
+        process.platform === "darwin" &&
+        isSinglePressCommand(command) &&
+        command !== desktopCommands.newSidePanelTab
+      ) {
         event.preventDefault();
         if (!input.isAutoRepeat) window.webContents.send(desktopIpc.appCommand, command);
       } else if (command === desktopCommands.toggleSidePanel) {
@@ -1006,13 +1017,23 @@ app
           ),
         viewDiagnostic: ([target, source, message]) =>
           console.error("[extension-view]", target.sessionId, source, message),
+        archiveChildThreads: async ([identity, threadIds]) => {
+          await store.initialize();
+          return store.archiveChildThreadsToolResult(
+            sessionRefFromRuntimeIdentity(identity),
+            threadIds,
+          );
+        },
         createChildThread: async ([identity, input]) => {
           await store.initialize();
           return store.createChildThreadToolResult(sessionRefFromRuntimeIdentity(identity), input);
         },
-        listThreads: async ([identity]) => {
+        listThreads: async ([identity, input]) => {
           await store.initialize();
-          return store.listThreadsToolResult(sessionRefFromRuntimeIdentity(identity));
+          return store.listThreadsToolResult(
+            sessionRefFromRuntimeIdentity(identity),
+            input.workspace,
+          );
         },
         readThread: async ([identity, threadId]) => {
           await store.initialize();
@@ -1070,9 +1091,7 @@ app
       generateThreadTitleOverride: async (workspace, options) =>
         generateThreadTitleOverride?.(workspace, options),
     });
-    protocol.handle(TRANSCRIPT_IMAGE_SCHEME, (request) =>
-      store.transcriptImageResponse(request.url),
-    );
+    protocol.handle(TOOL_IMAGE_SCHEME, (request) => store.transcriptImageResponse(request.url));
     windowOwner = new WindowOwner(store, {
       onActiveWindowChanged: (window) => {
         mainWindow = window;
@@ -1205,6 +1224,7 @@ app
             ? `pi desktop ready:${MAIN_DEV_RELOAD_MARKER}`
             : "pi desktop ready",
         theme: themeManager,
+        editors: editorService,
         openExternal: openExternalLink,
         pickWorkspace: (window) => pickWorkspaceViaDialog(window),
         createLoginCallbacks: (window) => createRuntimeLoginCallbacks(window),
