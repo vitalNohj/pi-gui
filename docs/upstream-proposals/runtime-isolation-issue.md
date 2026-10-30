@@ -1,31 +1,30 @@
-# Typing stalls while running tools in long conversations
+# Typing sometimes freezes while an agent runs commands
 
-## Problem
+## What happens
 
-The composer can pause or stop accepting input while a long, tool-heavy conversation runs commands. The original report included multi-second freezes around server/game startup commands.
+Typing can stutter or stop for a moment while an agent is working. It is more noticeable in long conversations with lots of command output. Sometimes it feels like the whole app has frozen.
 
-Profiling a copied large conversation found Pi request preparation and context hooks on Electron main’s JavaScript thread. Full-history cloning and context preparation therefore compete with window input dispatch and host IPC, even when the renderer is not saturated.
+The original report included pauses lasting several seconds when starting a game/server.
 
-## Measured reproduction
+## What we found
 
-Two alternating before/after pairs used the same copied 219 MB conversation and compression state, identical renderer assets, eight real shell tools returning 30 KB each, nine deterministic localhost-provider requests, and the same 165-character draft. Every run retained the exact draft.
+The app was handling the window and preparing long conversations for the AI in the same process. When that preparation took a long time, the window could become unresponsive.
 
-| Metric                          | In-main runtime: runs 1 / 2 | Isolated runtime: runs 1 / 2 |
-| ------------------------------- | --------------------------- | ---------------------------- |
-| Automated key-dispatch p95      | 369.8 / 339.0 ms            | 24.2 / 36.8 ms               |
-| Maximum key-dispatch round trip | 742.1 / 651.4 ms            | 68.6 / 144.9 ms              |
-| Main event-loop stalls ≥50 ms   | 19 / 19                     | 0 / 1                        |
+We reproduced the problem using a copy of a long conversation and harmless commands. We did not need to launch the game/server to see typing delays.
 
-Windows were hidden with background throttling disabled. Profiler startup/teardown is excluded from event-loop measurements. This is automated input-dispatch latency, not a physical-keyboard measurement; no paid provider or actual game/server was launched.
+## Suggested fix
 
-## Proposed fix
+Move agent work into a separate background process so the window can stay responsive while that work is busy.
 
-Run the existing Pi SDK driver and extension backends in an Electron utility process. Keep windows, native capabilities, application state, and the single catalog writer in main. Preserve event ordering, Stop/cancellation, callbacks and session ownership across a narrow request/reply boundary rather than changing compression semantics.
+In our automated comparison, typing-test response time fell from roughly 350 milliseconds to roughly 30 milliseconds. The user also tried a separate test build and said it felt good.
 
-## Validation and limits
+That is an improvement, but it does not prove every reported freeze is fixed.
 
-The updated-fork candidate passes repository checks, focused Electron regressions and packaged-app checks. The user also tried the standalone test build and reported: “It felt nice.” This is positive subjective feedback, not a detailed reproduction log.
+## Still to check
 
-The specific server/game startup and a formal visible real-provider conversation journey remain unverified. Runtime isolation adds memory and does not eliminate compression’s CPU cost or guarantee that every hitch is fixed.
+- Try the exact game/server startup that originally caused the freeze.
+- Investigate why one later test sent much more conversation data than earlier tests. We need to check whether the feature that shortens long conversations was working in that test. We do not yet know whether this is a test setup problem or an app problem.
 
-Detailed evidence: [runtime isolation report](../agent-runtime-isolation.md).
+The change also uses more memory. It keeps slow agent work away from the window; it does not remove that work.
+
+[Detailed measurements](../agent-runtime-isolation.md)
