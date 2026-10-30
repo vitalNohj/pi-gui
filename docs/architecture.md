@@ -6,9 +6,9 @@ The review/capture and custom extension-view additions are **implemented and ver
 
 ## Execution path
 
-The renderer calls the browser-safe `window.piApp` API exposed by preload. Electron main validates requests and routes them through [IPC registration](../apps/desktop/electron/ipc/register-desktop-ipc.ts). The [window owner](../apps/desktop/electron/windows/window-owner.ts) supplies the sender window's view and target session. Bounded desktop owners perform the operation, and the Pi SDK driver delegates agent execution to upstream Pi.
+The renderer calls the browser-safe `window.piApp` API exposed by preload. Electron main validates requests and routes them through [IPC registration](../apps/desktop/electron/ipc/register-desktop-ipc.ts). The [window owner](../apps/desktop/electron/windows/window-owner.ts) supplies the sender window's view and target session. Bounded desktop owners perform the operation. The [agent runtime owner](../apps/desktop/electron/runtime/agent-runtime-process.ts) forwards Pi operations to one owned Electron utility process, where the existing Pi SDK driver delegates agent execution to upstream Pi. Context preparation and extension hooks do not share Electron main's event loop; window/platform capabilities and the single catalog writer stay in main. See [runtime isolation and measured verification](agent-runtime-isolation.md).
 
-Start tracing in [main](../apps/desktop/electron/main.ts), [window owner](../apps/desktop/electron/windows/window-owner.ts), [IPC registration](../apps/desktop/electron/ipc/register-desktop-ipc.ts), [application store](../apps/desktop/electron/application/app-store.ts), and [Pi SDK driver](../packages/pi-sdk-driver/src/pi-sdk-driver.ts). Renderer, preload, and main remain separate bundles configured by [electron-vite](../apps/desktop/electron.vite.config.mjs).
+Start tracing in [main](../apps/desktop/electron/main.ts), [window owner](../apps/desktop/electron/windows/window-owner.ts), [IPC registration](../apps/desktop/electron/ipc/register-desktop-ipc.ts), [application store](../apps/desktop/electron/application/app-store.ts), and [Pi SDK driver](../packages/pi-sdk-driver/src/pi-sdk-driver.ts). Renderer, preload, main, and the agent runtime remain separate entry points configured by [electron-vite](../apps/desktop/electron.vite.config.mjs).
 
 ## Owners and boundaries
 
@@ -100,6 +100,7 @@ apps/desktop/
     workspace/           workspace, session, and worktree use cases
     orchestration/       child-thread policy and supervision
     scheduled-tasks/     local schedules, fire, and agent tools
+    runtime/             utility-process lifecycle, allowlisted Pi/host RPC, runtime entry
     workbench/           immutable reviews, reviewed marks, turn checkpoint store
     extensions/          registered view hosts, contained assets, narrow host actions
     persistence/         validated UI-state, attachment, and scheduled-task storage

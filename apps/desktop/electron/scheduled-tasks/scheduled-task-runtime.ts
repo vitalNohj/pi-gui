@@ -70,8 +70,8 @@ export interface ScheduledTaskRuntimeBridge {
 export interface ScheduledTaskToolUpdate {
   readonly taskId: string;
   readonly patch: UpdateScheduledTaskInput;
-  /** Applies the tool's schedule fields on top of the task's current schedule. */
-  readonly resolveSchedule?: (existing: ScheduledTaskSchedule) => ScheduledTaskSchedule;
+  /** Merge these serializable fields with the current schedule at the storage owner. */
+  readonly scheduleFields?: Readonly<Record<string, unknown>>;
 }
 
 type ScheduledToolDetails =
@@ -212,9 +212,16 @@ function parseUpdate(taskId: string, params: unknown): ScheduledTaskToolUpdate {
     ? {
         taskId,
         patch: withTarget,
-        resolveSchedule: (existing) => parseRepeatSchedule(mergeScheduleFields(existing, params)),
+        scheduleFields: params,
       }
     : { taskId, patch: withTarget };
+}
+
+export function resolveScheduledTaskSchedule(
+  existing: ScheduledTaskSchedule,
+  fields: Readonly<Record<string, unknown>>,
+): ScheduledTaskSchedule {
+  return parseRepeatSchedule(mergeScheduleFields(existing, fields));
 }
 
 /**

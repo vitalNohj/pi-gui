@@ -1,4 +1,5 @@
 import { JsonCatalogStore } from "@pi-gui/catalogs/node";
+import type { DesktopDriverFactory, DesktopSessionDriver } from "../runtime/runtime-contract";
 import { sessionKey } from "@pi-gui/session-driver";
 import type { ExtensionFlagValues, SessionSchemaInfo } from "@pi-gui/session-driver";
 import type { BrowserWindow } from "electron";
@@ -10,7 +11,6 @@ import {
   applyHostUiRequestToExtensionUiState,
   type GenerateThreadTitleOptions,
   isExtensionUiDialogRequest,
-  PiSdkDriver,
   type PiSdkDriverConfig,
   SessionLeasedError,
 } from "@pi-gui/pi-sdk-driver";
@@ -182,6 +182,7 @@ type ExtensionUiDialogRequest = Extract<
   readonly timeoutMs?: number;
 };
 export interface DesktopAppStoreOptions {
+  readonly createDriver: DesktopDriverFactory;
   readonly userDataDir: string;
   readonly initialWorkspacePaths: readonly string[];
   readonly getWindow?: () => BrowserWindow | null;
@@ -249,7 +250,7 @@ export class DesktopAppStore {
   /** Cached session schema info (version-skew flag) projected onto the transcript payload. */
   private readonly sessionSchemaInfoCache = new Map<string, SessionSchemaInfo>();
   private readonly sessionSchemaInfoInFlight = new Set<string>();
-  private readonly driver: PiSdkDriver;
+  private readonly driver: DesktopSessionDriver;
   private readonly catalogStore: JsonCatalogStore;
   private readonly worktreeManager: GitWorktreeManager;
   private readonly worktreeRoot: string;
@@ -309,7 +310,7 @@ export class DesktopAppStore {
         : {}),
     };
 
-    this.driver = new PiSdkDriver(driverOptions);
+    this.driver = options.createDriver(driverOptions);
     this.worktreeRoot = join(options.userDataDir, "worktrees");
     this.isAppWorktreePath = appWorktreeRootMatcher(this.worktreeRoot);
     this.worktreeManager = new GitWorktreeManager({
@@ -1856,7 +1857,7 @@ export class DesktopAppStore {
     if (!ws) {
       throw new Error(`Unknown workspace: ${workspaceId}`);
     }
-    const listing = this.driver.runtimeSupervisor.listMcpServers(ws);
+    const listing = await this.driver.runtimeSupervisor.listMcpServers(ws);
     return {
       globalConfigPath: withHomeAsTilde(listing.globalConfigPath),
       servers: listing.servers.map((server) => ({ ...server })),
@@ -3493,7 +3494,8 @@ export class DesktopAppStore {
             ...this.state,
             lastError: event.error.message,
           };
-          await this.refreshSessionCommands(event.sessionRef);
+          if (event.error.code !== "agent_runtime_unavailable")
+            await this.refreshSessionCommands(event.sessionRef);
           break;
         case "extensionCompatibilityIssue":
           this.reportExtensionCompatibilityIssue(event.sessionRef, event.issue, event.timestamp);

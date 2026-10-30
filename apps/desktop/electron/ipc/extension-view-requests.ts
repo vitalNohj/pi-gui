@@ -1,6 +1,6 @@
 import { parseDesktopHostAction } from "@pi-gui/extension-ui/browser";
 import { desktopIpc } from "../../contracts/ipc";
-import type { DesktopExtensionViewOwner } from "../extensions/extension-view-owner";
+import type { DesktopExtensionViewHost } from "../runtime/runtime-contract";
 import type { WindowOwner } from "../windows/window-owner";
 import type { MainFrameHandler } from "./main-frame-ipc";
 import { expectNonEmptyString, expectRecord, expectSessionTarget } from "./request-validation";
@@ -25,7 +25,7 @@ function decodeMessageRequest(raw: unknown) {
 export function registerExtensionViewRequests(
   handle: MainFrameHandler,
   windows: Pick<WindowOwner, "targetForSender">,
-  owner: DesktopExtensionViewOwner,
+  owner: DesktopExtensionViewHost,
 ): void {
   const senders = new Map<number, Electron.WebContents>();
   const pendingActions = new Map<string, Set<string>>();

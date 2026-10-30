@@ -1,7 +1,7 @@
 # CI baseline and adoption plan
 
 The current design is renderer → narrow preload API → main-process app store →
-Pi SDK driver → Pi runtime. Desktop UI state and Pi session state have separate
+owned agent utility process → Pi SDK driver → Pi runtime. Desktop UI state and Pi session state have separate
 persistence owners. The first CI pass strengthens verification of this design;
 it does not change those boundaries.
 

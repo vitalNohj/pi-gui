@@ -23,7 +23,7 @@ import type { ThemeManager } from "../platform/theme-manager";
 import type { WindowOwner } from "../windows/window-owner";
 import type { PendingComposerDraftFlusher } from "../windows/pending-draft-flush";
 import { WorkbenchRequests, type WorkbenchOwner } from "./workbench-requests";
-import type { DesktopExtensionViewOwner } from "../extensions/extension-view-owner";
+import type { DesktopExtensionViewHost } from "../runtime/runtime-contract";
 import { registerExtensionViewRequests } from "./extension-view-requests";
 import { registerReviewRequests, type ReviewRequestsOwner } from "./review-requests";
 import { mainFrameHandler } from "./main-frame-ipc";
@@ -171,7 +171,7 @@ export interface DesktopIpcOwners {
   readonly state: StateOwner;
   readonly workbench: WorkbenchOwner;
   readonly review: ReviewRequestsOwner;
-  readonly extensionViews: DesktopExtensionViewOwner;
+  readonly extensionViews: DesktopExtensionViewHost;
   readonly workspace: WorkspaceOwner;
   readonly conversation: ConversationOwner;
   readonly orchestration: OrchestrationOwner;

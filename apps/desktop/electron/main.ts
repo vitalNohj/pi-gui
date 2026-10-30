@@ -29,21 +29,17 @@ import { TRANSCRIPT_IMAGE_SCHEME } from "./application/app-store-utils";
 import { WindowOwner } from "./windows/window-owner";
 import { PendingComposerDraftFlusher } from "./windows/pending-draft-flush";
 import { TurnCheckpointStore } from "./workbench/checkpoint-store";
-import {
-  DesktopExtensionViewOwner,
-  DESKTOP_EXTENSION_SCHEME,
-} from "./extensions/extension-view-owner";
+import { DESKTOP_EXTENSION_SCHEME } from "./extensions/extension-view-owner";
 import { performExtensionViewHostAction } from "./extensions/extension-view-actions";
-import { extensionFrameDocument } from "./extensions/extension-frame-document";
+import { AgentRuntimeProcess } from "./runtime/agent-runtime-process";
+import type { DesktopExtensionViewHost, RuntimeSessionIdentity } from "./runtime/runtime-contract";
 import { ReviewOwner } from "./workbench/review-owner";
 import { registerDesktopIpc } from "./ipc/register-desktop-ipc";
 import {
-  createOrchestrationRuntimeExtension,
   createOrchestrationRuntimeTools,
   type OrchestrationRuntimeBridge,
 } from "./orchestration/orchestration-runtime";
 import {
-  createScheduledTaskRuntimeExtension,
   createScheduledTaskRuntimeTools,
   type ScheduledTaskRuntimeBridge,
 } from "./scheduled-tasks/scheduled-task-runtime";
@@ -99,7 +95,8 @@ const windowTestMode = appTestMode ?? "foreground";
 const devReloadMarkersEnabled = process.env.PI_APP_DEV_RELOAD_MARKERS === "1";
 const TURN_CAPTURE_BACKSTOP_MS = 10_000;
 let store: DesktopAppStore;
-let extensionViewOwner: DesktopExtensionViewOwner | undefined;
+let extensionViewOwner: DesktopExtensionViewHost | undefined;
+let agentRuntimeProcess: AgentRuntimeProcess | undefined;
 let windowOwner: WindowOwner;
 const themeManager = new ThemeManager();
 let mainWindow: BrowserWindow | null = null;
@@ -207,8 +204,17 @@ function createStoreBackedOrchestrationRuntimeBridge(): OrchestrationRuntimeBrid
 }
 
 function sessionRefFromExtensionContext(ctx: ExtensionContext): SessionRef {
-  const sessionId = ctx.sessionManager.getSessionId();
-  const cwd = path.resolve(ctx.sessionManager.getCwd?.() ?? ctx.cwd);
+  return sessionRefFromRuntimeIdentity({
+    sessionId: ctx.sessionManager.getSessionId(),
+    cwd: ctx.sessionManager.getCwd?.() ?? ctx.cwd,
+  });
+}
+
+function sessionRefFromRuntimeIdentity({
+  cwd: requestedCwd,
+  sessionId,
+}: RuntimeSessionIdentity): SessionRef {
+  const cwd = path.resolve(requestedCwd);
   const sessionRef = store.findSessionRefByCwdAndSessionId(cwd, sessionId);
   if (!sessionRef) {
     throw new Error(`Unable to resolve orchestration session for ${cwd}:${sessionId}`);
@@ -972,31 +978,72 @@ app
     const orchestrationRuntimeBridge = createStoreBackedOrchestrationRuntimeBridge();
     const scheduledTaskRuntimeBridge = createStoreBackedScheduledTaskRuntimeBridge();
     const checkpoints = new TurnCheckpointStore(configuredUserDataDir);
-    const extensionViews: DesktopExtensionViewOwner = new DesktopExtensionViewOwner({
-      frameDocument: extensionFrameDocument,
-      hostAssets: {
-        "frame-bridge.js": {
-          body: await readFile(
-            createRequire(__filename).resolve("@pi-gui/extension-ui/frame-bridge"),
-            "utf8",
-          ),
-          contentType: "text/javascript; charset=utf-8",
+    const runtime: AgentRuntimeProcess = new AgentRuntimeProcess({
+      init: {
+        hostAssets: {
+          "frame-bridge.js": {
+            body: await readFile(
+              createRequire(__filename).resolve("@pi-gui/extension-ui/frame-bridge"),
+              "utf8",
+            ),
+            contentType: "text/javascript; charset=utf-8",
+          },
         },
       },
-      onHostAction: (context) =>
-        performExtensionViewHostAction(
-          {
-            store,
-            windows: windowOwner,
-            views: extensionViews,
-            openExternal: openExternalLink,
-            saveComposerDraft: (window) => composerDraftFlusher.flush([window]),
-          },
-          context,
-        ),
-      onDiagnostic: (target, source, message) =>
-        console.error("[extension-view]", target.sessionId, source, message),
+      inspectRuntime:
+        appTestMode !== undefined && process.env.PI_APP_TEST_RUNTIME_INSPECTOR === "1",
+      capabilities: {
+        viewHostAction: ([context]) =>
+          performExtensionViewHostAction(
+            {
+              store,
+              windows: windowOwner,
+              views: runtime.extensionViews,
+              openExternal: openExternalLink,
+              saveComposerDraft: (window) => composerDraftFlusher.flush([window]),
+            },
+            context,
+          ),
+        viewDiagnostic: ([target, source, message]) =>
+          console.error("[extension-view]", target.sessionId, source, message),
+        createChildThread: async ([identity, input]) => {
+          await store.initialize();
+          return store.createChildThreadToolResult(sessionRefFromRuntimeIdentity(identity), input);
+        },
+        listThreads: async ([identity]) => {
+          await store.initialize();
+          return store.listThreadsToolResult(sessionRefFromRuntimeIdentity(identity));
+        },
+        readThread: async ([identity, threadId]) => {
+          await store.initialize();
+          return store.readThreadToolResult(sessionRefFromRuntimeIdentity(identity), threadId);
+        },
+        sendMessageToThread: async ([identity, input]) => {
+          await store.initialize();
+          return store.sendMessageToThreadToolResult(
+            sessionRefFromRuntimeIdentity(identity),
+            input,
+          );
+        },
+        createScheduledTask: async ([identity, input]) => {
+          await store.initialize();
+          return store.createScheduledTaskToolResult(
+            sessionRefFromRuntimeIdentity(identity),
+            input,
+          );
+        },
+        listScheduledTasks: async () => {
+          await store.initialize();
+          return store.listScheduledTasksToolResult();
+        },
+        updateScheduledTask: async ([input]) => {
+          await store.initialize();
+          return store.updateScheduledTaskToolResult(input);
+        },
+      },
     });
+    agentRuntimeProcess = runtime;
+    const extensionViews = runtime.extensionViews;
     extensionViewOwner = extensionViews;
     protocol.handle(DESKTOP_EXTENSION_SCHEME, (request) =>
       extensionViews.assetResponse(request.url),
@@ -1005,36 +1052,10 @@ app
       ConstructorParameters<typeof DesktopAppStore>[0]["driverOptions"]
     > = {
       onTurnCaptureBoundary: (boundary, signal) => checkpoints.recordBoundary(boundary, signal),
-      // The store bounds each capture from when it starts; this only stops a stuck boundary,
-      // including one waiting behind another run's capture in the same checkout.
       turnCaptureTimeoutMs: TURN_CAPTURE_BACKSTOP_MS,
-      desktopExtensions: {
-        onChanged: (runtime) => extensionViews.replaceRuntime(runtime),
-        onInvalidated: ({ target, generation }) =>
-          extensionViews.invalidateRuntime(target, generation),
-      },
       openUrl: openMcpSignInUrl,
-      builtinExtensions: [
-        {
-          name: "pi-gui-thread-orchestration",
-          displayName: "Thread orchestration",
-          description: "Lets pi start, read and message other pi-gui threads",
-          factory: createOrchestrationRuntimeExtension(orchestrationRuntimeBridge),
-        },
-        {
-          name: "pi-gui-scheduled-tasks",
-          displayName: "Scheduled tasks",
-          description: "Lets pi create and update local pi-gui scheduled tasks",
-          factory: createScheduledTaskRuntimeExtension(scheduledTaskRuntimeBridge, (ctx) => {
-            try {
-              return sessionRefFromExtensionContext(ctx).workspaceId;
-            } catch {
-              return undefined;
-            }
-          }),
-        },
-      ],
     };
+    let sessionDriver: ReturnType<AgentRuntimeProcess["createDriver"]> | undefined;
     store = new DesktopAppStore({
       userDataDir: configuredUserDataDir,
       initialWorkspacePaths: resolveInitialWorkspacePaths(),
@@ -1042,6 +1063,10 @@ app
       shouldKeepSessionDialogs: (sessionRef) =>
         windowOwner?.isSessionVisibleInAnotherWindow(sessionRef) ?? false,
       driverOptions,
+      createDriver: (options) => {
+        sessionDriver = runtime.createDriver(options);
+        return sessionDriver;
+      },
       generateThreadTitleOverride: async (workspace, options) =>
         generateThreadTitleOverride?.(workspace, options),
     });
@@ -1077,6 +1102,12 @@ app
     if (process.env.PI_APP_TEST_MODE) {
       Object.assign(globalThis, {
         __PI_APP_TEST_HOOKS: {
+          agentRuntimeInfo: () => runtime.diagnostics,
+          // Controlled main/IPC tests replace the facade, never an SDK prototype in main.
+          sessionDriver: () => {
+            if (!sessionDriver) throw new Error("Desktop session driver is unavailable");
+            return sessionDriver;
+          },
           emitSessionEvent: (event: SessionDriverEvent) => store.emitTestSessionEvent(event),
           loadedTranscriptSessionIds: () => store.loadedTranscriptSessionIdsForTest(),
           handleWindowActivation: () => {
@@ -1302,7 +1333,7 @@ app.on("before-quit", (event) => {
   // Renderers send their debounced drafts first so the store flush below includes them.
   const flush = composerDraftFlusher
     .flush(windowOwner.allWindows())
-    .then(() => Promise.all([quittingStore.flushPersistence(), extensionViewOwner?.dispose()]))
+    .then(() => Promise.all([quittingStore.flushPersistence(), agentRuntimeProcess?.dispose()]))
     .catch((error: unknown) => {
       console.error("pi-gui: persistence flush failed during quit:", error);
     });

@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import type { PiSdkDriver } from "@pi-gui/pi-sdk-driver";
+import type { DesktopSessionDriver } from "../../electron/runtime/runtime-contract";
 import type { SessionDriverEvent, SessionRef } from "@pi-gui/session-driver";
 import { desktopIpc } from "../../contracts/ipc";
 import {
@@ -87,17 +87,16 @@ export default function extension(pi) {
           await draftGate;
           return persist(...args);
         });
-        const { createRequire } = process.getBuiltinModule("module");
-        const load = createRequire(input.entry);
-        const { PiSdkDriver: Driver } = load("@pi-gui/pi-sdk-driver") as {
-          PiSdkDriver: typeof PiSdkDriver;
-        };
         const hooks = (
           globalThis as {
-            __PI_APP_TEST_HOOKS?: { emitSessionEvent(event: SessionDriverEvent): Promise<void> };
+            __PI_APP_TEST_HOOKS?: {
+              emitSessionEvent(event: SessionDriverEvent): Promise<void>;
+              sessionDriver(): DesktopSessionDriver;
+            };
           }
         ).__PI_APP_TEST_HOOKS;
         if (!hooks) throw new Error("Test event hook unavailable");
+        const driver = hooks.sessionDriver();
         let releaseRun = () => {};
         const emit = (ref: SessionRef, status: "running" | "idle") =>
           hooks.emitSessionEvent({
@@ -112,14 +111,14 @@ export default function extension(pi) {
               updatedAt: new Date().toISOString(),
             },
           });
-        Driver.prototype.sendUserMessage = async function (ref) {
+        driver.sendUserMessage = async function (ref) {
           const runGate = new Promise<void>((resolveRun) => {
             releaseRun = resolveRun;
           });
           await emit(ref, "running");
           await runGate;
         };
-        Driver.prototype.cancelCurrentRun = async function (ref) {
+        driver.cancelCurrentRun = async function (ref) {
           if (
             ref.workspaceId !== input.target.workspaceId ||
             ref.sessionId !== input.target.sessionId
@@ -141,7 +140,6 @@ export default function extension(pi) {
         };
       },
       {
-        entry: resolve("apps/desktop/out/main/main.js"),
         workspacePath,
         target,
         persistChannel: desktopIpc.persistComposerDraft,

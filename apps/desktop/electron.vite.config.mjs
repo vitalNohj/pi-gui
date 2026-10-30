@@ -21,6 +21,7 @@ export default defineConfig(({ command }) => {
         rollupOptions: {
           input: {
             main: path.resolve(projectRoot, "electron/main.ts"),
+            "agent-runtime": path.resolve(projectRoot, "electron/runtime/agent-runtime.ts"),
           },
         },
       },

@@ -29,8 +29,9 @@ import type {
 import { NEW_THREAD_PLACEHOLDER_TITLE } from "../conversation/thread-title-constants";
 import type { RefreshStateOptions } from "../application/refresh-state-options";
 import { nextRunAt } from "./scheduled-task-schedule";
-import type {
-  ScheduledTaskToolUpdate,
+import {
+  resolveScheduledTaskSchedule,
+  type ScheduledTaskToolUpdate,
   CreateScheduledTaskToolDetails,
   ListScheduledTasksToolDetails,
   UpdateScheduledTaskToolDetails,
@@ -788,12 +789,15 @@ async function updateScheduledTaskToolResult(
   input: ScheduledTaskToolUpdate,
 ): Promise<AgentToolResult<UpdateScheduledTaskToolDetails>> {
   let patch = input.patch;
-  if (input.resolveSchedule) {
+  if (input.scheduleFields) {
     await store.initialize();
     const existing = store.scheduledTasks().find((task) => task.id === input.taskId);
     if (existing) {
       try {
-        patch = { ...patch, schedule: input.resolveSchedule(existing.schedule) };
+        patch = {
+          ...patch,
+          schedule: resolveScheduledTaskSchedule(existing.schedule, input.scheduleFields),
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return {
