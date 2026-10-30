@@ -1,7 +1,5 @@
 # Keep typing responsive while agents are working
 
-> Draft only. Before submitting this upstream, separate this fix from the unrelated changes on the combined test branch.
-
 ## Why
 
 Some agent work was running in the same process that keeps the app window responsive. Preparing a long conversation for the next AI request could therefore make typing pause.
@@ -47,5 +45,3 @@ The user also tried the separate test build and said it felt good.
 - The exact game/server startup still needs testing. The automated comparison used harmless commands and a local test server, not a real AI service.
 - One later test sent much more conversation data than earlier tests. We need to check whether conversation shortening was working correctly in that test before calling the change ready to submit. This may be a test setup issue or an app issue; it has not been traced yet.
 - Packaging was checked on an Apple Silicon Mac, not Windows or Linux.
-
-This PR should contain only this fix and its tests. Other performance changes belong in separate PRs.
