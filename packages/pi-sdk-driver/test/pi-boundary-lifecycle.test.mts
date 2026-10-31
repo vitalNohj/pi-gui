@@ -474,6 +474,73 @@ await test(
 );
 
 await test(
+  "opening a thread does not wait for the workspace's session-file re-read",
+  { timeout: 15000 },
+  async (t) => {
+    // The re-read that runs when the window regains focus takes seconds on a large workspace.
+    // Hold its catalog write open, as if it were still reading files.
+    let holdReplace: ReturnType<typeof gate> | undefined;
+    let replaceReached!: () => void;
+    const replaceStarted = new Promise<void>((resolve) => {
+      replaceReached = resolve;
+    });
+    const h = await fixture(
+      t,
+      (model) => response(model, "Done"),
+      undefined,
+      (catalog) =>
+        Object.assign(Object.create(catalog) as JsonCatalogStore, {
+          replaceWorkspaceSessions: async (
+            ...args: Parameters<JsonCatalogStore["replaceWorkspaceSessions"]>
+          ) => {
+            if (holdReplace) {
+              replaceReached();
+              await holdReplace.promise;
+            }
+            return catalog.replaceWorkspaceSessions(...args);
+          },
+        }),
+    );
+    await h.driver.sendUserMessage(h.ref, { text: "First" });
+    await h.until(() => h.completions().length === 1);
+    assert.equal(await h.driver.releaseSession(h.ref), true);
+
+    holdReplace = gate();
+    const reconciling = h.driver.reconcileWorkspace(h.ref.workspaceId);
+    await replaceStarted;
+    const opens: Promise<unknown>[] = [];
+    const openWithin = async (ms: number) => {
+      const opening = h.driver.openSession(h.ref).then(() => "opened");
+      opens.push(opening);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          opening,
+          new Promise((resolve) => {
+            timer = setTimeout(() => resolve("waited for the re-read"), ms);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    try {
+      // A cleared thread that has to reopen from its file, then the same thread once open.
+      assert.equal(await openWithin(2000), "opened");
+      h.resubscribe();
+      assert.equal(await openWithin(2000), "opened");
+    } finally {
+      holdReplace.release();
+      await reconciling;
+      await Promise.allSettled(opens);
+    }
+    // The workspace still records when it was last opened, once the re-read is done.
+    const workspaces = (await h.driver.listWorkspaces()).workspaces;
+    assert.equal(workspaces.length, 1);
+  },
+);
+
+await test(
   "releasing an idle session frees it and it reopens from its file; a running one is kept",
   { timeout: 15000 },
   async (t) => {
@@ -607,6 +674,11 @@ await test(
     const finished = await restarted.openSession(h.ref);
     assert.equal(finished.status, "idle");
     assert.equal(finished.lastRunOutcome, "completed");
+    // The catalog is written in the background; give the write a moment to land.
+    const cleared = async () =>
+      /"stoppedReplies": \{\}/.test(await readFile(join(h.root, "catalogs.json"), "utf8"));
+    const deadline = Date.now() + 2000;
+    while (!(await cleared()) && Date.now() < deadline) await nextEventLoopTurn();
     assert.match(await readFile(join(h.root, "catalogs.json"), "utf8"), /"stoppedReplies": \{\}/);
   },
 );
