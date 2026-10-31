@@ -1053,16 +1053,108 @@ async function waitForThreadSettled(window: Page, sessionId: string, timeout = 1
 }
 
 async function openThread(window: Page, ref: { workspaceId: string; sessionId: string }) {
+  // In-page phase marks, measured from the click: row highlighted, skeleton shown, content shown,
+  // timeline settled, plus long tasks over the switch. Polling over IPC would add its own delay.
+  await window.evaluate((sessionId) => {
+    const g = globalThis as typeof globalThis & { __perfOpen?: Record<string, unknown> };
+    const marks: Record<string, number> = {};
+    const longTasks: number[] = [];
+    // Measured from the real pointer press, so harness round trips before the click don't count.
+    let t0 = performance.now();
+    let pressed = false;
+    const onPress = () => {
+      if (pressed) return;
+      pressed = true;
+      t0 = performance.now();
+    };
+    document.addEventListener("pointerdown", onPress, { capture: true });
+    const check = () => {
+      if (!pressed) return;
+      const now = performance.now() - t0;
+      const row = document.querySelector(`[data-session-id="${sessionId}"]`);
+      if (marks.highlighted === undefined && row?.classList.contains("session-row--active"))
+        marks.highlighted = now;
+      const skeleton = document.querySelector('[data-testid="transcript-skeleton"]');
+      if (skeleton && marks.skeleton === undefined) marks.skeleton = now;
+      const pane = document.querySelector('[data-testid="timeline-pane"]');
+      // The highlight and the skeleton land in the same commit, so this waits for the transcript.
+      if (!skeleton && pane && marks.content === undefined && marks.highlighted !== undefined) {
+        marks.content = now;
+        // The next frame after the content commit: roughly when the person sees it.
+        requestAnimationFrame(() =>
+          setTimeout(() => {
+            marks.painted = performance.now() - t0;
+          }),
+        );
+      }
+      if (
+        pane?.getAttribute("data-layout") === "settled" &&
+        marks.content !== undefined &&
+        marks.settled === undefined
+      )
+        marks.settled = now;
+    };
+    const observer = new MutationObserver(check);
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: ["class", "data-layout"],
+    });
+    const longObserver = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) longTasks.push(Math.round(entry.duration));
+    });
+    longObserver.observe({ type: "longtask" });
+    g.__perfOpen = {
+      marks,
+      longTasks,
+      start: onPress,
+      stop: () => {
+        observer.disconnect();
+        longObserver.disconnect();
+        document.removeEventListener("pointerdown", onPress, { capture: true });
+      },
+    };
+  }, ref.sessionId);
   const started = Date.now();
   const row = window.locator(`[data-session-id="${ref.sessionId}"] .session-row__select`);
   const viaSidebar = (await row.count()) > 0 && (await row.first().isVisible());
   if (viaSidebar) {
     await row.first().click();
   } else {
-    await window.evaluate((target) => globalThis.window.piApp!.selectSession(target), ref);
+    await window.evaluate((target) => {
+      (
+        globalThis as typeof globalThis & { __perfOpen?: { start: () => void } }
+      ).__perfOpen!.start();
+      return globalThis.window.piApp!.selectSession(target);
+    }, ref);
   }
+  // Wait in the page, not by pulling app state over IPC: each pull copies the whole state and
+  // would slow the switch being measured.
+  await window.waitForFunction(
+    () => {
+      const g = globalThis as typeof globalThis & {
+        __perfOpen?: { marks: Record<string, number> };
+      };
+      return g.__perfOpen?.marks.painted !== undefined && g.__perfOpen.marks.settled !== undefined;
+    },
+    undefined,
+    { timeout: 120_000, polling: 50 },
+  );
+  const total = Date.now() - started;
+  const inPage = await window.evaluate(() => {
+    const g = globalThis as typeof globalThis & {
+      __perfOpen?: { marks: Record<string, number>; longTasks: number[]; stop: () => void };
+    };
+    const open = g.__perfOpen!;
+    open.stop();
+    const marks = Object.fromEntries(
+      Object.entries(open.marks).map(([key, value]) => [key, Math.round(value)]),
+    );
+    return { marks, longTasks: open.longTasks };
+  });
   await waitForThreadSettled(window, ref.sessionId);
-  return { ms: Date.now() - started, viaSidebar };
+  return { ms: total, viaSidebar, ...inPage };
 }
 
 /** Per keystroke: wait before the handler ran, handler time, and time until the app was idle. */
@@ -1492,6 +1584,23 @@ test("performance survey on a copy of the real profile", async () => {
         const opens = [];
         for (const target of switchTargets) opens.push(await openThread(window, target));
         opens.push(await openThread(window, longThread.sessionRef));
+        return { opens };
+      });
+    }
+
+    if (scenarios("switch-loaded")) {
+      // Back and forth between threads that stay loaded (the recent few), as in everyday use.
+      await scenario("switch-loaded", async () => {
+        const pair = [switchTargets[0]!, longThread.sessionRef];
+        for (const target of pair) await openThread(window, target);
+        await window.waitForTimeout(1000);
+        const opens = [];
+        for (let round = 0; round < 4; round += 1) {
+          for (const target of pair) {
+            opens.push({ sessionId: target.sessionId, ...(await openThread(window, target)) });
+            await window.waitForTimeout(500);
+          }
+        }
         return { opens };
       });
     }
