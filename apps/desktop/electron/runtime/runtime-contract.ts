@@ -17,6 +17,16 @@ import type {
 import type { OrchestrationRuntimeBridge } from "../orchestration/orchestration-runtime";
 import type { ScheduledTaskRuntimeBridge } from "../scheduled-tasks/scheduled-task-runtime";
 
+/** The agent runtime process was lost. Every session it had open must be reopened. */
+export const AGENT_RUNTIME_UNAVAILABLE = "agent_runtime_unavailable";
+/** One session lost its event connection. It must be reopened before it is used again. */
+export const AGENT_SESSION_DETACHED = "agent_session_detached";
+/** Error codes after which the store must reopen the session on its next use. */
+export const DETACHED_SESSION_ERROR_CODES: ReadonlySet<string> = new Set([
+  AGENT_RUNTIME_UNAVAILABLE,
+  AGENT_SESSION_DETACHED,
+]);
+
 export const SESSION_METHODS = [
   "createSession",
   "validateForkSession",

@@ -23,6 +23,17 @@ async function leaseHolderPid(leasePath: string): Promise<number | undefined> {
   }
 }
 
+async function agentRuntimePid(harness: DesktopHarness): Promise<number> {
+  const pid = await harness.electronApp.evaluate(
+    () =>
+      (
+        globalThis as { __PI_APP_TEST_HOOKS?: { agentRuntimeInfo(): { pid?: number } } }
+      ).__PI_APP_TEST_HOOKS?.agentRuntimeInfo().pid,
+  );
+  if (!pid) throw new Error("Missing agent runtime PID");
+  return pid;
+}
+
 /**
  * Two pi-gui processes (separate user-data dirs, so the single-instance lock
  * does not stop the second) share one pi agent dir. The first holds a thread
@@ -58,16 +69,17 @@ test("a second pi-gui process cannot open a thread the first one holds", async (
       "This session is currently open in another pi instance",
     );
 
+    // Pi runs in each app's agent runtime process, so that process holds the lease.
     const [leasePath] = await findLeaseFiles(agentDir);
-    const firstPid = first.electronApp.process().pid;
-    expect(await leaseHolderPid(leasePath)).toBe(firstPid);
+    expect(await leaseHolderPid(leasePath)).toBe(await agentRuntimePid(first));
 
     // Once the holder quits its lease is dead, so the thread opens here and
     // this process takes the lease over.
     await first.close();
     await selectSession(secondWindow, title);
     await expect(secondWindow.getByTestId("composer-error-banner")).toHaveCount(0);
-    await expect.poll(() => leaseHolderPid(leasePath)).toBe(second.electronApp.process().pid);
+    const secondRuntimePid = await agentRuntimePid(second);
+    await expect.poll(() => leaseHolderPid(leasePath)).toBe(secondRuntimePid);
   } finally {
     await second?.close();
     await first.close().catch(() => {});

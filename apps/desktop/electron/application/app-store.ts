@@ -1,5 +1,9 @@
 import { JsonCatalogStore } from "@pi-gui/catalogs/node";
-import type { DesktopDriverFactory, DesktopSessionDriver } from "../runtime/runtime-contract";
+import {
+  DETACHED_SESSION_ERROR_CODES,
+  type DesktopDriverFactory,
+  type DesktopSessionDriver,
+} from "../runtime/runtime-contract";
 import { sessionKey } from "@pi-gui/session-driver";
 import type { ExtensionFlagValues, SessionSchemaInfo } from "@pi-gui/session-driver";
 import type { BrowserWindow } from "electron";
@@ -7,13 +11,15 @@ import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join, resolve, sep } from "node:path";
+import type {
+  GenerateThreadTitleOptions,
+  LeaseInfo,
+  PiSdkDriverConfig,
+} from "@pi-gui/pi-sdk-driver";
 import {
   applyHostUiRequestToExtensionUiState,
-  type GenerateThreadTitleOptions,
   isExtensionUiDialogRequest,
-  type PiSdkDriverConfig,
-  SessionLeasedError,
-} from "@pi-gui/pi-sdk-driver";
+} from "@pi-gui/pi-sdk-driver/extension-ui-state";
 import type { SessionCatalogEntry } from "@pi-gui/catalogs";
 import type {
   NavigateSessionTreeOptions,
@@ -3369,6 +3375,24 @@ export class DesktopAppStore {
     this.extensionDialogTimeoutTimers.delete(key);
   }
 
+  /**
+   * The runtime that had this session open is gone. Forget what lived only there (its event
+   * subscription, queued messages, open extension dialogs and widgets) and mark the transcript
+   * as not loaded, so the next use reopens the session from its file in the new runtime. The
+   * visible transcript stays until then, including the failure that explains the stop.
+   */
+  private detachSession(sessionRef: SessionRef): void {
+    const key = sessionKey(sessionRef);
+    this.sessionState.sessionSubscriptions.get(key)?.();
+    this.sessionState.sessionSubscriptions.delete(key);
+    this.sessionState.loadedTranscriptKeys.delete(key);
+    this.clearExtensionDialogTimeoutsForSession(sessionRef);
+    this.sessionState.extensionUiBySession.delete(key);
+    this.sessionState.queuedComposerMessagesBySession.delete(key);
+    this.sessionState.queuedComposerEditsBySession.delete(key);
+    this.pendingRuntimeCommandsBySession.delete(key);
+  }
+
   private clearExtensionDialogTimeoutsForSession(sessionRef: SessionRef): void {
     const prefix = `${sessionKey(sessionRef)}:`;
     for (const [key, timer] of this.extensionDialogTimeoutTimers) {
@@ -3531,8 +3555,11 @@ export class DesktopAppStore {
             ...this.state,
             lastError: event.error.message,
           };
-          if (event.error.code !== "agent_runtime_unavailable")
+          if (event.error.code && DETACHED_SESSION_ERROR_CODES.has(event.error.code)) {
+            this.detachSession(event.sessionRef);
+          } else {
             await this.refreshSessionCommands(event.sessionRef);
+          }
           break;
         case "extensionCompatibilityIssue":
           this.reportExtensionCompatibilityIssue(event.sessionRef, event.issue, event.timestamp);
@@ -5023,12 +5050,17 @@ function describeStoreError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isSessionLeasedError(error: unknown): error is SessionLeasedError {
+/**
+ * Errors from the agent runtime arrive as plain errors that keep their `code` and lease holder,
+ * so this checks the code. Main never loads the Pi SDK just to recognise the class.
+ */
+function isSessionLeasedError(error: unknown): error is Error & { readonly holder: LeaseInfo } {
   return (
-    error instanceof SessionLeasedError ||
-    (typeof error === "object" &&
-      error !== null &&
-      (error as { code?: unknown }).code === "SESSION_LEASED")
+    typeof error === "object" &&
+    error !== null &&
+    (error as { code?: unknown }).code === "SESSION_LEASED" &&
+    typeof (error as { holder?: unknown }).holder === "object" &&
+    (error as { holder?: unknown }).holder !== null
   );
 }
 

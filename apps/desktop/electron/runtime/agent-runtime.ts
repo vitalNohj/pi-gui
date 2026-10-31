@@ -27,6 +27,15 @@ import { RuntimeRpcPeer, invokeRuntimeMethod, remoteRuntimeMethods } from "./run
 
 const parent = process.parentPort;
 if (!parent) throw new Error("The Pi runtime must be launched as an Electron utility process");
+// Extensions run here. When Pi ran in main, Electron reported a stray throw from an extension
+// timer or callback and kept going. Without these handlers a utility process exits on the first
+// one, which would stop every agent. Keep the same tolerance; real crashes still restart it.
+process.on("uncaughtException", (error) => {
+  console.error("[runtime] Uncaught exception (the runtime keeps running)", error);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[runtime] Unhandled rejection (the runtime keeps running)", reason);
+});
 const rpc = new RuntimeRpcPeer<AgentRuntimeMethods, RuntimeHostMethods>({
   post: (message) => parent.postMessage(message),
 });
