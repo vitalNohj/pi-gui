@@ -7,7 +7,7 @@ import type {
   SelectedTranscriptRecord,
   SessionExtensionUiUpdate,
 } from "../../contracts/desktop-state";
-import { selectedTranscriptPatch } from "../../contracts/desktop-state";
+import { sameSessionSchemaInfo, selectedTranscriptPatch } from "../../contracts/desktop-state";
 import { desktopIpc } from "../../contracts/ipc";
 import { SerializedActionQueue } from "./action-queue";
 
@@ -388,7 +388,7 @@ export class WindowOwner {
         previous.workspaceId === payload.workspaceId &&
         previous.sessionId === payload.sessionId &&
         previous.transcript === payload.transcript &&
-        previous.schemaInfo === payload.schemaInfo
+        sameSessionSchemaInfo(previous.schemaInfo, payload.schemaInfo)
       ) {
         return;
       }
@@ -408,7 +408,12 @@ export class WindowOwner {
     }
     this.lastPublishedTranscript.set(webContentsId, payload);
     const patch = previous && payload ? selectedTranscriptPatch(previous, payload) : undefined;
-    if (patch && patch.deleteCount === 0 && patch.rows.length === 0) {
+    if (
+      patch &&
+      patch.deleteCount === 0 &&
+      patch.rows.length === 0 &&
+      sameSessionSchemaInfo(previous?.schemaInfo, payload?.schemaInfo)
+    ) {
       return;
     }
     window.webContents.send(desktopIpc.selectedTranscriptChanged, patch ?? payload);

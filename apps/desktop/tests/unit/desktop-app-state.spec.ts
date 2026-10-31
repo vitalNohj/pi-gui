@@ -12,6 +12,7 @@ import {
 import {
   applySelectedTranscriptPatch,
   createEmptyDesktopAppState,
+  sameSessionSchemaInfo,
   selectedTranscriptPatch,
   type DesktopAppState,
   type SelectedTranscriptPatch,
@@ -388,6 +389,36 @@ test("a transcript patch carries only the changed rows and rebuilds the same tra
   );
   expect(applySelectedTranscriptPatch(record([row("a"), row("b"), row("c")]), otherBase)).toBe(
     undefined,
+  );
+
+  // Schema info is re-read on every window focus and arrives as a new, equal object. That alone
+  // must not resend a whole transcript: it is an empty patch that equal-checks as unchanged.
+  const current = { fileSchemaVersion: 3, runtimeSchemaVersion: 3, writtenByNewerRuntime: false };
+  const reread = { ...current };
+  expect(sameSessionSchemaInfo(current, reread)).toBe(true);
+  expect(sameSessionSchemaInfo(current, undefined)).toBe(false);
+  const sameRows = selectedTranscriptPatch(
+    { ...record(rows), schemaInfo: current },
+    { ...record(rows), schemaInfo: reread },
+  );
+  expect(sameRows).toMatchObject({ deleteCount: 0, rows: [] });
+  // A real change rides along with the patch.
+  const newer = { fileSchemaVersion: 4, runtimeSchemaVersion: 3, writtenByNewerRuntime: true };
+  const flagged = selectedTranscriptPatch(
+    { ...record(rows), schemaInfo: current },
+    { ...record(rows), schemaInfo: newer },
+  )!;
+  expect(flagged).toMatchObject({ deleteCount: 0, rows: [], schemaInfo: newer });
+  expect(
+    applySelectedTranscriptPatch(
+      { ...record(rows), schemaInfo: current },
+      structuredClone(flagged),
+    ),
+  ).toEqual({ ...record(rows), schemaInfo: newer });
+  // A record that loses its schema info loses it after the patch too.
+  const cleared = selectedTranscriptPatch({ ...record(rows), schemaInfo: newer }, record(rows))!;
+  expect(applySelectedTranscriptPatch({ ...record(rows), schemaInfo: newer }, cleared)).toEqual(
+    record(rows),
   );
 });
 

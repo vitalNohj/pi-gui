@@ -276,6 +276,23 @@ export interface SelectedTranscriptPatch {
   readonly start: number;
   readonly deleteCount: number;
   readonly rows: readonly TranscriptMessage[];
+  // The record's schema info after the patch. It changes on its own when the file header is
+  // re-read, so it travels with the patch instead of forcing the whole transcript to be resent.
+  readonly schemaInfo?: SessionSchemaInfo;
+}
+
+export function sameSessionSchemaInfo(
+  a: SessionSchemaInfo | undefined,
+  b: SessionSchemaInfo | undefined,
+): boolean {
+  return (
+    a === b ||
+    (a !== undefined &&
+      b !== undefined &&
+      a.fileSchemaVersion === b.fileSchemaVersion &&
+      a.runtimeSchemaVersion === b.runtimeSchemaVersion &&
+      a.writtenByNewerRuntime === b.writtenByNewerRuntime)
+  );
 }
 
 // Rows are replaced, never edited in place, so identity finds the changed range.
@@ -284,11 +301,7 @@ export function selectedTranscriptPatch(
   previous: SelectedTranscriptRecord,
   next: SelectedTranscriptRecord,
 ): SelectedTranscriptPatch | undefined {
-  if (
-    previous.workspaceId !== next.workspaceId ||
-    previous.sessionId !== next.sessionId ||
-    previous.schemaInfo !== next.schemaInfo
-  ) {
+  if (previous.workspaceId !== next.workspaceId || previous.sessionId !== next.sessionId) {
     return undefined;
   }
   const before = previous.transcript;
@@ -312,6 +325,7 @@ export function selectedTranscriptPatch(
     start,
     deleteCount: before.length - start - end,
     rows: after.slice(start, after.length - end),
+    ...(next.schemaInfo ? { schemaInfo: next.schemaInfo } : {}),
   };
 }
 
@@ -329,13 +343,15 @@ export function applySelectedTranscriptPatch(
   ) {
     return undefined;
   }
+  const { schemaInfo: _replaced, ...rest } = record;
   return {
-    ...record,
+    ...rest,
     transcript: [
       ...record.transcript.slice(0, patch.start),
       ...patch.rows,
       ...record.transcript.slice(patch.start + patch.deleteCount),
     ],
+    ...(patch.schemaInfo ? { schemaInfo: patch.schemaInfo } : {}),
   };
 }
 
