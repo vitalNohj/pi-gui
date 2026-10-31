@@ -1496,6 +1496,60 @@ test("performance survey on a copy of the real profile", async () => {
       });
     }
 
+    if (scenarios("window-return")) {
+      // Returning to the window reconciles the selected workspace against its session files.
+      const focus = () =>
+        harness!.electronApp.evaluate(({ BrowserWindow }) => {
+          const [first] = BrowserWindow.getAllWindows();
+          first?.emit("blur");
+          first?.emit("focus");
+        });
+      await scenario("window-return", async () => {
+        await installKeyLatency(window);
+        const composer = window.getByTestId("composer");
+        await composer.click();
+        const returns: number[] = [];
+        for (let round = 0; round < 3; round += 1) {
+          const started = Date.now();
+          await focus();
+          // Type while the reconcile runs, as a person does after switching back.
+          await composer.pressSequentially("back again ", { delay: 70 });
+          returns.push(Date.now() - started);
+          await window.waitForTimeout(4000);
+        }
+        const keyed = await readKeyLatency(window);
+        await composer.fill("");
+        return { returns, ...keyed };
+      });
+    }
+
+    if (scenarios("reopen-released")) {
+      // Threads beyond the recent few are released; reopening one reloads it from its file.
+      const large = bySize
+        .filter((session) => session.sessionRef.sessionId !== longThread.sessionRef.sessionId)
+        .slice(0, 3)
+        .map((session) => session.sessionRef);
+      await scenario("reopen-released", async () => {
+        const opens = [];
+        for (const target of large) opens.push({ first: await openThread(window, target) });
+        // Visit other threads so the large ones fall out of the recent set and are released.
+        for (const target of switchTargets.slice(0, 4)) await openThread(window, target);
+        await window.waitForTimeout(2000);
+        const loaded = await harness!.electronApp.evaluate(() =>
+          (
+            globalThis as typeof globalThis & {
+              __PI_APP_TEST_HOOKS?: { loadedTranscriptSessionIds?: () => string[] };
+            }
+          ).__PI_APP_TEST_HOOKS?.loadedTranscriptSessionIds?.(),
+        );
+        for (const [index, target] of large.entries()) {
+          opens[index] = { ...opens[index]!, again: await openThread(window, target) };
+        }
+        await openThread(window, longThread.sessionRef);
+        return { opens, loadedBeforeReopen: loaded?.length };
+      });
+    }
+
     if (scenarios("scroll")) {
       await scenario("scroll", async () => {
         const box = (await window.getByTestId("timeline-pane").boundingBox())!;
