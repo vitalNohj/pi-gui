@@ -47,6 +47,8 @@ const REAL_SDK = process.env.PERF_SDK === "1";
 const WITH_ACP = process.env.PERF_ACP === "1";
 const SDK_TOOL = process.env.PERF_SDK_TOOL ?? "bash";
 const SDK_TURNS = Number(process.env.PERF_SDK_TURNS ?? 8);
+// CPU profilers add their own memory and time. Turn them off to measure memory and latency only.
+const NO_PROFILER = process.env.PERF_NO_PROFILER === "1";
 
 // ---------------------------------------------------------------------------------------------
 // Profile copy
@@ -545,7 +547,7 @@ async function installMainInstrumentation(harness: DesktopHarness): Promise<void
 }
 
 async function startMain(harness: DesktopHarness): Promise<void> {
-  await harness.electronApp.evaluate(async ({ app }) => {
+  await harness.electronApp.evaluate(async ({ app }, noProfiler) => {
     const perf = (globalThis as MainGlobal).__perf!;
     perf.sends = {};
     perf.gaps = [];
@@ -554,17 +556,20 @@ async function startMain(harness: DesktopHarness): Promise<void> {
     probe?.reset();
     if (probe) probe.active = true;
     app.getAppMetrics(); // resets percentCPUUsage
+    if (noProfiler) return;
     const post = perf.post;
     await post("Profiler.enable");
     await post("Profiler.setSamplingInterval", { interval: 500 });
     await post("Profiler.start");
-  });
+  }, NO_PROFILER);
 }
 
 async function stopMain(harness: DesktopHarness) {
-  return harness.electronApp.evaluate(async ({ app }) => {
+  return harness.electronApp.evaluate(async ({ app }, noProfiler) => {
     const perf = (globalThis as MainGlobal).__perf!;
-    const { profile } = (await perf.post("Profiler.stop")) as { profile: unknown };
+    const { profile } = noProfiler
+      ? { profile: { nodes: [], startTime: 0, endTime: 0, samples: [], timeDeltas: [] } }
+      : ((await perf.post("Profiler.stop")) as { profile: unknown });
     perf.active = false;
     const processes = app.getAppMetrics().map((metric) => ({
       type: metric.type,
@@ -581,7 +586,7 @@ async function stopMain(harness: DesktopHarness) {
       dataFlow: probe?.read() ?? null,
       gaps: perf.gaps,
     };
-  });
+  }, NO_PROFILER);
 }
 
 async function startRenderer(window: Page, cdp: CDPSession): Promise<void> {
@@ -609,13 +614,16 @@ async function startRenderer(window: Page, cdp: CDPSession): Promise<void> {
     observer.observe({ entryTypes: ["longtask"] });
     g.__perfFrames.observer = observer;
   });
+  if (NO_PROFILER) return;
   await cdp.send("Profiler.enable");
   await cdp.send("Profiler.setSamplingInterval", { interval: 500 });
   await cdp.send("Profiler.start");
 }
 
 async function stopRenderer(window: Page, cdp: CDPSession) {
-  const { profile } = await cdp.send("Profiler.stop");
+  const { profile } = NO_PROFILER
+    ? { profile: { nodes: [], startTime: 0, endTime: 0, samples: [], timeDeltas: [] } }
+    : await cdp.send("Profiler.stop");
   const page = await window.evaluate(() => {
     const g = globalThis.window as RendererGlobal;
     const state = g.__perfFrames!;
@@ -890,7 +898,7 @@ async function startAgentRuntimeProfile(harness: DesktopHarness) {
       }
     ).__PI_APP_TEST_HOOKS?.agentRuntimeInfo?.(),
   );
-  if (!info) return null;
+  if (!info || NO_PROFILER) return null;
   if (!info.inspectorUrl) throw new Error("Runtime inspector was not enabled for this capture");
   const socket = new WebSocket(info.inspectorUrl);
   await new Promise<void>((resolve, reject) => {
@@ -1250,7 +1258,7 @@ test("performance survey on a copy of the real profile", async () => {
         ACP_LOG_FILE: join(OUT, "acp.log"),
         ACP_AUTO_UPDATE: "0",
         ACP_DEBUG: "0",
-        PI_APP_TEST_RUNTIME_INSPECTOR: "1",
+        PI_APP_TEST_RUNTIME_INSPECTOR: NO_PROFILER ? undefined : "1",
         BILLION_CONTEXT_PROXY: undefined,
         PI_APP_INITIAL_WORKSPACES: undefined,
         PI_SESSION_FILE: undefined,
