@@ -1,30 +1,27 @@
-# Typing sometimes freezes while an agent runs commands
+# Typing freezes while an agent works on a long conversation
 
 ## What happens
 
-Typing can stutter or stop for a moment while an agent is working. It is more noticeable in long conversations with lots of command output. Sometimes it feels like the whole app has frozen.
+Typing stutters or stops while an agent runs commands. It gets worse in long conversations
+with a lot of command output. Sometimes the whole window feels frozen for a second or more.
 
-The original report included pauses lasting several seconds when starting a game/server.
+The original report was a freeze of several seconds while an agent started a game server.
 
-## What we found
+## Cause
 
-The app was handling the window and preparing long conversations for the AI in the same process. When that preparation took a long time, the window could become unresponsive.
+Before each request to the AI, Pi copies the whole conversation and runs extension hooks over
+it, including the hooks that shorten long conversations. pi-gui runs Pi in the same process
+that handles the window. With a long conversation, that work blocks the window until it ends.
 
-We reproduced the problem using a copy of a long conversation and harmless commands. We did not need to launch the game/server to see typing delays.
+We reproduced it with a copy of a real 219 MB conversation, the conversation-shortening
+extension, harmless commands and a local test server. No game server was needed.
+
+## How bad it is
+
+In our automated test, 95% of key presses took up to about 1.1 seconds to get through, and
+the slowest took 1.9 seconds. The window's process was blocked for up to 1.8 seconds at a time.
 
 ## Suggested fix
 
-Move agent work into a separate background process so the window can stay responsive while that work is busy.
-
-In our automated comparison, typing-test response time fell from roughly 350 milliseconds to roughly 30 milliseconds. The user also tried a separate test build and said it felt good.
-
-That is an improvement, but it does not prove every reported freeze is fixed.
-
-## Still to check
-
-- Try the exact game/server startup that originally caused the freeze.
-- Investigate why one later test sent much more conversation data than earlier tests. We need to check whether the feature that shortens long conversations was working in that test. We do not yet know whether this is a test setup problem or an app problem.
-
-The change also uses more memory. It keeps slow agent work away from the window; it does not remove that work.
-
-[Detailed measurements](../agent-runtime-isolation.md)
+Run Pi in a separate background process, so this work can't block the window. In the same
+test, 95% of key presses got through within 22–35 ms.

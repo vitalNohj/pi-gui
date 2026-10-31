@@ -1,47 +1,59 @@
-# Keep typing responsive while agents are working
+# Keep typing responsive while agents work
 
 ## Why
 
-Some agent work was running in the same process that keeps the app window responsive. Preparing a long conversation for the next AI request could therefore make typing pause.
+Pi ran in the same process as the window. Before every AI request it copies the whole
+conversation and runs extension hooks over it. In a long conversation that blocked typing
+for up to two seconds.
 
 ## What changed
 
-Agent work now runs in a separate background process, leaving the window free to handle typing and clicks.
-
-The change also keeps these safeguards:
-
-- Stop is not stuck waiting behind a running prompt.
-- Updates stay in the right order.
-- If the background process crashes, the app keeps the draft and shows an error.
-- The app does not automatically repeat a command when it cannot tell whether that command already ran.
-
-This changes where the work runs, not how the AI’s conversation is shortened.
+- **Pi runs in its own background process.** The window process keeps the app state, the
+  conversation list, windows and system access. The two talk over a private channel that only
+  allows listed methods. Stop still works while a prompt is running.
+- **A stray extension error no longer stops agents.** When Pi ran in the window process, an
+  error thrown from an extension timer was logged and the app kept going. The background
+  process now does the same.
+- **If the background process dies, pi-gui starts a new one.** Running work fails with a clear
+  message, the draft stays, and nothing is sent again by itself. Each conversation reopens from
+  its file the next time you use it. If it dies three times within a minute, pi-gui stops
+  restarting it and asks you to restart the app.
+- **The window process no longer loads Pi.** It only needs a few small helpers, so it now
+  imports those directly. This saves about 100 MB and up to half a second at startup.
 
 ## Results
 
-We ran two tests before the change and two after it. Each used the same copied long conversation, eight harmless commands, and the same 165 typed characters. Every run kept the full draft.
+Automated test on a copy of a real 219 MB conversation, with the conversation-shortening
+extension, eight harmless commands, a local test server and 165 typed characters. Two runs
+each, with no profiler attached. The full draft was kept every time.
 
-| Automated check                   | Before     | After       |
-| --------------------------------- | ---------- | ----------- |
-| Typing-test response time*        | 339–370 ms | 24–37 ms    |
-| App pauses lasting at least 50 ms | 19 per run | 0–1 per run |
+| Measurement                         | Before           | After            |
+| ----------------------------------- | ---------------- | ---------------- |
+| Time for 95% of key presses         | 1,125 / 1,099 ms | 35 / 22 ms       |
+| Slowest key press                   | 1,906 / 1,468 ms | 124 / 94 ms      |
+| Longest window-process stall        | 1,824 / 1,351 ms | 90 / 71 ms       |
+| Window-process stalls of 50 ms+     | 10 / 11          | 2 / 1            |
+| Memory, all processes, while typing | 2,316 / 2,348 MB | 2,455 / 2,489 MB |
+| Memory, all processes, idle         | 447–611 MB       | 499–717 MB       |
 
-*The first row shows the response time that covered 95% of test key presses. These were automated checks, not measurements from a physical keyboard. Test setup time is excluded from the pause counts.
+Memory is roughly the same. What Pi used to hold in the window process now sits in the
+background process. Requests to the AI were exactly the same size before and after.
 
-The user also tried the separate test build and said it felt good.
+## Tests
 
-## Checks
+- `pnpm check` passes, including 441 unit tests.
+- The full Electron integration suite: 314 passed. One timeline-scrolling test also fails
+  without this change.
+- New tests: typing and app requests keep working while an extension blocks the background
+  process; an extension timer error leaves the same process running; killing the process stops
+  the running turn without resending it, keeps the draft, and the next send works through the
+  new process; restart limit unit tests.
+- The packaged Mac app starts, runs extensions in the background process and opens a terminal.
 
-- The standard project checks passed, including 439 unit tests; one existing test was skipped for the platform.
-- 24 checks in the running app passed, covering typing, Stop, drafts, threads, attachments, and extensions.
-- Two checks of the packaged Mac app passed, including its terminal.
-- Required files and AI model definitions were verified in the packaged app.
+## Limits
 
-## Trade-offs and remaining checks
-
-- The app used roughly half a gigabyte more memory in these tests.
-- Agents still share one background process. A slow extension can hold up other agents, even though it no longer blocks the window in the same way.
-- This does not make the underlying agent work cheaper or guarantee that every hitch is fixed.
-- The exact game/server startup still needs testing. The automated comparison used harmless commands and a local test server, not a real AI service.
-- One later test sent much more conversation data than earlier tests. We need to check whether conversation shortening was working correctly in that test before calling the change ready to submit. This may be a test setup issue or an app issue; it has not been traced yet.
-- Packaging was checked on an Apple Silicon Mac, not Windows or Linux.
+- All agents share one background process, so a slow extension can still delay other agents.
+  It can no longer freeze the window.
+- This moves the work off the window process; it does not make preparing long conversations
+  cheaper.
+- Checked on an Apple Silicon Mac only.
