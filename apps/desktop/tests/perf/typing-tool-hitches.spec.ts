@@ -1068,8 +1068,15 @@ async function openThread(window: Page, ref: { workspaceId: string; sessionId: s
       t0 = performance.now();
     };
     document.addEventListener("pointerdown", onPress, { capture: true });
+    // Clicking the thread that is already open shows no loading placeholder; count it as shown.
+    const alreadyOpen = Boolean(
+      document
+        .querySelector(`[data-session-id="${sessionId}"]`)
+        ?.classList.contains("session-row--active"),
+    );
     const check = () => {
       if (!pressed) return;
+      if (alreadyOpen && marks.skeleton === undefined) marks.skeleton = 0;
       const now = performance.now() - t0;
       const row = document.querySelector(`[data-session-id="${sessionId}"]`);
       if (marks.highlighted === undefined && row?.classList.contains("session-row--active"))
@@ -1078,7 +1085,9 @@ async function openThread(window: Page, ref: { workspaceId: string; sessionId: s
       if (skeleton && marks.skeleton === undefined) marks.skeleton = now;
       const pane = document.querySelector('[data-testid="timeline-pane"]');
       // The highlight and the skeleton land in the same commit, so this waits for the transcript.
-      if (!skeleton && pane && marks.content === undefined && marks.highlighted !== undefined) {
+      // Content counts once the loading placeholder has come and gone. A thread with no sidebar row
+      // (opened directly) is never highlighted, so the highlight cannot be the signal.
+      if (!skeleton && pane && marks.content === undefined && marks.skeleton !== undefined) {
         marks.content = now;
         // The next frame after the content commit: roughly when the person sees it.
         requestAnimationFrame(() =>
@@ -1131,16 +1140,41 @@ async function openThread(window: Page, ref: { workspaceId: string; sessionId: s
   }
   // Wait in the page, not by pulling app state over IPC: each pull copies the whole state and
   // would slow the switch being measured.
-  await window.waitForFunction(
-    () => {
-      const g = globalThis as typeof globalThis & {
-        __perfOpen?: { marks: Record<string, number> };
-      };
-      return g.__perfOpen?.marks.painted !== undefined && g.__perfOpen.marks.settled !== undefined;
-    },
-    undefined,
-    { timeout: 120_000, polling: 50 },
-  );
+  try {
+    await window.waitForFunction(
+      () => {
+        const g = globalThis as typeof globalThis & {
+          __perfOpen?: { marks: Record<string, number> };
+        };
+        return (
+          g.__perfOpen?.marks.painted !== undefined && g.__perfOpen.marks.settled !== undefined
+        );
+      },
+      undefined,
+      { timeout: 120_000, polling: 50 },
+    );
+  } catch (error) {
+    // Say which step never happened, and what the page shows now.
+    const seen = await window
+      .evaluate((sessionId) => {
+        const g = globalThis as typeof globalThis & {
+          __perfOpen?: { marks: Record<string, number> };
+        };
+        return {
+          marks: g.__perfOpen?.marks,
+          rowInSidebar: Boolean(document.querySelector(`[data-session-id="${sessionId}"]`)),
+          skeleton: Boolean(document.querySelector('[data-testid="transcript-skeleton"]')),
+          layout: document
+            .querySelector('[data-testid="timeline-pane"]')
+            ?.getAttribute("data-layout"),
+        };
+      }, ref.sessionId)
+      .catch(() => undefined);
+    throw new Error(
+      `Opening ${ref.sessionId} was not seen to finish (viaSidebar ${viaSidebar}): ${JSON.stringify(seen)}`,
+      { cause: error },
+    );
+  }
   const total = Date.now() - started;
   const inPage = await window.evaluate(() => {
     const g = globalThis as typeof globalThis & {
@@ -1629,6 +1663,125 @@ test("performance survey on a copy of the real profile", async () => {
         const keyed = await readKeyLatency(window);
         await composer.fill("");
         return { returns, ...keyed };
+      });
+    }
+
+    if (scenarios("return-then-switch")) {
+      // Come back to the window, then click another thread right away, as a person does.
+      const returnToWindow = () =>
+        harness!.electronApp.evaluate(({ BrowserWindow }) => {
+          const [first] = BrowserWindow.getAllWindows();
+          first?.emit("blur");
+          first?.emit("focus");
+        });
+      // Cycling through more threads than stay loaded means each one is reopened from its file.
+      // Threads in a parent/child group are never cleared, so use ones that are not.
+      const grouped = new Set(
+        (await getDesktopState(window)).orchestrationChildren.flatMap((child) => [
+          child.parentSessionId,
+          child.childSessionId,
+        ]),
+      );
+      const cycle = background
+        .filter((session) => !grouped.has(session.sessionRef.sessionId))
+        .slice(RUNNING, RUNNING + 5)
+        .map((session) => session.sessionRef);
+      const loadedIds = () =>
+        harness!.electronApp.evaluate(
+          () =>
+            (
+              globalThis as typeof globalThis & {
+                __PI_APP_TEST_HOOKS?: { loadedTranscriptSessionIds?: () => string[] };
+              }
+            ).__PI_APP_TEST_HOOKS?.loadedTranscriptSessionIds?.() ?? [],
+        );
+      for (const target of cycle) await openThread(window, target);
+      await window.waitForTimeout(3000);
+      await scenario("return-then-switch", async () => {
+        const opens = [];
+        for (let round = 0; round < 5; round += 1) {
+          const target = cycle[round % cycle.length]!;
+          const wasLoaded = (await loadedIds()).includes(target.sessionId);
+          await returnToWindow();
+          await window.waitForTimeout(150);
+          opens.push({
+            sessionId: target.sessionId,
+            wasLoaded,
+            ...(await openThread(window, target)),
+          });
+          await window.waitForTimeout(4000);
+        }
+        // The same switches without a window return first, for comparison.
+        const plain = [];
+        for (let round = 0; round < 5; round += 1) {
+          const target = cycle[round % cycle.length]!;
+          const wasLoaded = (await loadedIds()).includes(target.sessionId);
+          plain.push({
+            sessionId: target.sessionId,
+            wasLoaded,
+            ...(await openThread(window, target)),
+          });
+          await window.waitForTimeout(4000);
+        }
+        // Return, click one thread, then quickly another: the second click is what the person waits on.
+        const quick = [];
+        for (let round = 0; round < 3; round += 1) {
+          const first = cycle[(round * 2) % cycle.length]!;
+          const second = cycle[(round * 2 + 1) % cycle.length]!;
+          const wasLoaded = (await loadedIds()).includes(second.sessionId);
+          await returnToWindow();
+          await window.waitForTimeout(150);
+          await window.locator(`[data-session-id="${first.sessionId}"]`).first().click();
+          await window.waitForTimeout(300);
+          quick.push({
+            sessionId: second.sessionId,
+            wasLoaded,
+            ...(await openThread(window, second)),
+          });
+          await window.waitForTimeout(4000);
+        }
+        // Time the driver calls a switch waits on: the focus re-read, and reopening a cleared thread
+        // alone and while that re-read runs.
+        const timings = await harness!.electronApp.evaluate(
+          async (_electron, refs) => {
+            const hooks = (
+              globalThis as typeof globalThis & {
+                __PI_APP_TEST_HOOKS?: {
+                  sessionDriver?: () => {
+                    reconcileWorkspace(id: string): Promise<unknown>;
+                    openSession(ref: { workspaceId: string; sessionId: string }): Promise<unknown>;
+                    releaseSession?(ref: {
+                      workspaceId: string;
+                      sessionId: string;
+                    }): Promise<boolean>;
+                    getTranscript(ref: {
+                      workspaceId: string;
+                      sessionId: string;
+                    }): Promise<unknown>;
+                  };
+                };
+              }
+            ).__PI_APP_TEST_HOOKS;
+            const driver = hooks!.sessionDriver!();
+            const time = async (work: () => Promise<unknown>) => {
+              const started = performance.now();
+              await work();
+              return Math.round(performance.now() - started);
+            };
+            const [first, second] = refs;
+            const reconcileMs = await time(() => driver.reconcileWorkspace(first.workspaceId));
+            const transcriptMs = await time(() => driver.getTranscript(first));
+            await driver.releaseSession?.(first);
+            const reopenMs = await time(() => driver.openSession(first));
+            await driver.releaseSession?.(second);
+            const reconcile = driver.reconcileWorkspace(second.workspaceId);
+            const reopenDuringReconcileMs = await time(() => driver.openSession(second));
+            await reconcile;
+            return { reconcileMs, transcriptMs, reopenMs, reopenDuringReconcileMs };
+          },
+          [cycle[3]!, cycle[4]!] as const,
+        );
+        return { opens, plain, quick, timings };
       });
     }
 
