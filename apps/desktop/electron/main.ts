@@ -12,7 +12,7 @@ import {
   type MenuItemConstructorOptions,
   type MessageBoxOptions,
 } from "electron";
-import { isValidHttpBaseUrl } from "@pi-gui/pi-sdk-driver";
+import { isValidHttpBaseUrl } from "@pi-gui/pi-sdk-driver/custom-provider-types";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import type {
