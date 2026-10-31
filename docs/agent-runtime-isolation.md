@@ -63,7 +63,8 @@ before (upstream `faf8edd6`), first isolation (`8d15f267`), improved (this branc
 
 Key round trip is automated key dispatch through the renderer and back, not a physical
 keyboard. The before runs here are slower than the earlier profiled pair (339–370 ms p95)
-because the copied thread has grown since; compare only rows from the same table.
+because an earlier harness run added a turn to the seed copy, so every request is larger;
+compare only rows from the same table.
 
 ### Memory while working
 
